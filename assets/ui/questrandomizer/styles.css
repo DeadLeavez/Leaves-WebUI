@@ -1,0 +1,292 @@
+/* Shared styles for the Questrandomizer web UI (reroll + handbook pages). */
+  /* palette tokens, the body baseline (bg/text/font/margin), .muted and mark now come from the shared
+     /webui/base.css, linked before this file. Only Questrandomizer-specific rules live here. */
+  h1 { font-size:20px; margin:0 0 4px; }
+  /* Left sidebar holds the title + the controls that apply to the whole page (profile, admin mode,
+     tab switcher), so the main column can spend its full height on the quest list. */
+  .layout { display:flex; align-items:stretch; min-height:100vh; }
+  .side { width:220px; flex:none; box-sizing:border-box; background:#16181c; border-right:1px solid #2a2d34;
+          padding:18px 14px; display:flex; flex-direction:column; gap:10px; }
+  .side h1 { font-size:17px; margin:0 0 6px; }
+  .side select { width:100%; box-sizing:border-box; }
+  .sidesep { height:1px; background:#2a2d34; margin:4px 0; }
+  .navbtn { display:block; width:100%; box-sizing:border-box; text-align:left; }
+  /* margin-top:auto pushes this to the bottom of the sidebar's flex column */
+  .sidenote { margin-top:auto; color:#9aa0a6; font-size:11.5px; line-height:1.45; }
+  .sidenote code { display:block; margin-top:4px; color:#cbb089; font-size:10.5px; word-break:break-all; }
+  .main { flex:1; min-width:0; box-sizing:border-box; padding:20px 22px; }
+  @media (max-width: 760px) {
+    .layout { flex-direction:column; }
+    .side { width:auto; border-right:none; border-bottom:1px solid #2a2d34; }
+  }
+  .sub { color:#9aa0a6; font-size:13px; margin-bottom:14px; }
+  .bar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  select, input[type=text], button { background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:6px; padding:8px 10px; font-size:14px; }
+  input[type=text] { flex:1; min-width:180px; }
+  button { cursor:pointer; }
+  button.primary { background:#c8843c; border-color:#c8843c; color:#1b1d22; font-weight:600; }
+  button.primary:hover { background:#d9954d; }
+  button:hover { border-color:#5a5f68; }
+  .tabs { display:flex; gap:6px; margin:10px 0 16px; }
+  .tab { background:#23262c; border:1px solid #3a3e46; }
+  .tab.active { background:#c8843c; border-color:#c8843c; color:#1b1d22; font-weight:600; }
+  .pane { display:none; }
+  .pane.active { display:block; }
+  /* Fill the window height minus the pane's own header/search/status chrome - the sidebar means we
+     no longer lose rows to a title + tab strip stacked above the list. */
+  .list { border:1px solid #3a3e46; border-radius:8px; max-height:calc(100vh - 190px); overflow:auto; }
+  .row { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid #2a2d34; }
+  .row:last-child { border-bottom:none; }
+  .row.pick { cursor:pointer; }
+  .row.pick:hover { background:#23262c; }
+  .row input { width:16px; height:16px; }
+  .grow { flex:1; min-width:0; }
+  .rw { color:#9aa0a6; font-size:12px; }
+  .status { margin-top:14px; font-size:14px; min-height:22px; }
+  .warn { color:#e8b04b; font-weight:600; }
+  .admintoggle { display:flex; align-items:center; gap:8px; font-size:13px; color:#cbb089; margin:0 0 8px; cursor:pointer; user-select:none; }
+  .side .admintoggle { margin:0; } /* sidebar uses flex gap for spacing */
+  .admintoggle input { width:16px; height:16px; }
+  /* Inline filter toggle that lives inside a .bar (no bottom margin so it stays centered on the row). */
+  .filtertoggle { display:flex; align-items:center; gap:8px; font-size:13px; color:#cbb089; margin:0; cursor:pointer; user-select:none; white-space:nowrap; flex:none; }
+  .filtertoggle input { width:16px; height:16px; }
+  .disclaimer { border:1px solid #6b4a1e; background:#2a2113; color:#e8b04b; border-radius:6px; padding:8px 12px; font-size:12.5px; margin-bottom:10px; }
+  .qrow { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border-bottom:1px solid #2a2d34; }
+  .qrow:last-child { border-bottom:none; }
+  .qrow.pick { cursor:pointer; }
+  .qrow.pick:hover { background:#23262c; }
+  .qrow input[type=checkbox] { width:16px; height:16px; flex:none; margin-top:3px; }
+  .qrow button { flex:none; align-self:center; }
+  .qname { font-weight:600; }
+  .qtrader { color:#9aa0a6; font-size:13.5px; font-weight:400; }
+  .objs { margin:6px 0 0; padding-left:18px; }
+  .objs li { color:#c9cdd3; font-size:13px; margin:2px 0; }
+  .objs a { color:#e8b04b; text-decoration:underline dotted; text-underline-offset:2px; }
+  .objs a:hover { color:#ffc76b; text-decoration:underline solid; }
+  /* Objective progress. A finished sub-task is ticked and dimmed so the eye skips straight to
+     whatever is still outstanding; unfinished counters show their running total instead. */
+  .objs li.done { color:#7d848d; }
+  .objs li.done .otext { text-decoration:line-through; text-decoration-color:#5a5f68; }
+  .tick { color:#6bd67b; font-weight:700; }
+  .prog { color:#e8b04b; font-variant-numeric:tabular-nums; font-size:12px; margin-left:4px; }
+
+  /* Objective pins (Search tab). The 📌 button sits at the end of every objective line; it's faint and
+     greyscale until hovered or pinned. The tray above the results holds a frozen copy of each pinned
+     line and is session-only (sessionStorage) - it never touches the profile. */
+  .pinbtn { background:none; border:none; cursor:pointer; font-size:11px; line-height:1; padding:0 3px;
+    margin-left:6px; opacity:.25; filter:grayscale(1); vertical-align:baseline; }
+  .pinbtn:hover { opacity:.8; }
+  .pinbtn.on { opacity:1; filter:none; }
+  .objs li:hover .pinbtn { opacity:.55; }
+  .objs li:hover .pinbtn.on { opacity:1; }
+  .pintray { border:1px solid #3a3e46; border-radius:8px; margin-bottom:12px; background:#20232a; }
+  .pintray-hd { display:flex; align-items:center; gap:8px; padding:6px 10px; }
+  .pintray-toggle { background:none; border:none; color:#e8b04b; font-size:13px; font-weight:600;
+    cursor:pointer; padding:2px 4px; }
+  .pintray-toggle::before { content:'📌 ▾ '; }
+  .pintray.collapsed .pintray-toggle::before { content:'📌 ▸ '; }
+  .pintray-refresh { margin-left:auto; font-size:12px; }
+  .pintray-clear { font-size:12px; }
+  .pintray .pinobjs { margin:0; padding:2px 10px 8px 26px; max-height:28vh; overflow:auto; }
+  .pintray.collapsed .pinobjs { display:none; }
+  /* ⤵ jump button on each tray line: scrolls the results below to the live objective. Amber like the
+     other links, faint until hovered, sitting just left of the 📌 unpin button. */
+  .pinjump { background:none; border:none; cursor:pointer; color:#e8b04b; font-size:13px; line-height:1;
+    padding:0 3px; margin-left:6px; opacity:.55; vertical-align:baseline; }
+  .pinjump:hover { opacity:1; }
+  /* Flash the objective line (or, as a fallback, the whole quest card) a jump landed on. */
+  .objs li.flash { animation:qrflash-bg 3.5s ease-out forwards; border-radius:4px; }
+  .qrow.flash { animation:qrflash-bg 3.5s ease-out forwards; border-radius:8px; }
+  @keyframes qrflash-bg {
+    0% { background:#3a2f16; }
+    60% { background:#3a2f16; }
+    100% { background:transparent; }
+  }
+
+  /* Rewards column on the right of a card, beside the chain column (same fixed-width, header + vertical
+     list shape) so a reward list grows DOWN its own column instead of making the card taller. Item
+     rewards keep the same dotted amber links as objective items; xp/rep/skill/unlock get muted tints. */
+  .qrewards { flex:none; width:170px; align-self:flex-start; border-left:1px solid #2a2d34; padding-left:12px; }
+  .rwline { font-size:12.5px; line-height:1.5; color:#c9cdd3; }
+  .rwmul { color:#e8b04b; font-variant-numeric:tabular-nums; font-weight:600; }
+  .rw-item a { color:#e8b04b; text-decoration:underline dotted; text-underline-offset:2px; }
+  .rw-item a:hover { color:#ffc76b; text-decoration:underline solid; }
+  /* Item reward line: name truncates with an ellipsis (full name is in its title tooltip) while the ×N
+     count stays pinned at the end, so a long item name can't push the count out of the narrow column. */
+  .rw-item { display:flex; align-items:baseline; gap:4px; }
+  .rw-item .rwitem { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rw-item .rwmul { flex:none; }
+  .rw-xp { color:#8fd0ff; }
+  .rw-rep { color:#7fd694; }
+  .rw-skill { color:#c9a6ff; }
+  .rw-unlock { color:#e8b04b; }
+  .qname a { color:inherit; text-decoration:underline dotted; text-underline-offset:2px; }
+  .qname a:hover { color:#ffc76b; text-decoration:underline solid; }
+  /* Per-quest description toggle + its lazily-fetched body. The button is a quiet inline affordance
+     next to the trader; the box reads as secondary prose above the objectives. */
+  .descbtn { background:none; border:1px solid #3a3f47; color:#9aa0a6; font-size:11.5px;
+             border-radius:4px; padding:0 6px; margin-left:6px; cursor:pointer; vertical-align:1px; }
+  .descbtn:hover { color:#ffc76b; border-color:#5a5f68; }
+  .qdesc { color:#b3b8bf; font-size:12.5px; line-height:1.45; margin:5px 0 0;
+           padding:6px 9px; background:#1f2228; border-left:2px solid #3a3f47; border-radius:3px;
+           white-space:normal; }
+  /* Compact mod-requirement markers appended to a weapon group in an objective line: green (R) =
+     category requires mods, red (F) = it forbids some. Same colours as the handbook req/forb tags. */
+  .modmark { font-weight:700; }
+  .modmark.req { color:#7fd694; }
+  .modmark.forb { color:#e88a8a; }
+
+  /* "found in raid" -> animated rainbow. The gradient is painted onto the text itself (background
+     clipped to the glyphs) and slid sideways forever, so the phrase shimmers through the spectrum. */
+  .fir {
+    font-weight:700;
+    background:linear-gradient(90deg,#ff3b3b,#ff9d2f,#ffe23b,#43d95a,#2fb6ff,#8a63ff,#ff3bea,#ff3b3b);
+    background-size:200% auto;
+    -webkit-background-clip:text; background-clip:text;
+    -webkit-text-fill-color:transparent; color:transparent;
+    animation:firflow 4s linear infinite;
+  }
+  /* A struck-through completed line keeps its line visible even though the text goes transparent. */
+  .objs li.done .fir { text-decoration-color:#5a5f68; }
+  @keyframes firflow { to { background-position:200% center; } }
+  @media (prefers-reduced-motion: reduce) { .fir { animation:none; } }
+  /* Debug Browse: the quest-chain panel on the right of a card. Prerequisites and unlocked quests,
+     each name a link that jumps the list to that quest. Sits beside the quest body via .qrow's flex. */
+  .qchain { flex:none; width:230px; align-self:flex-start; border-left:1px solid #2a2d34; padding-left:12px; }
+  .chainhdr { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin:0 0 2px; }
+  .chainhdr + .chainbody { margin-bottom:2px; }
+  .chainbody + .chainhdr { margin-top:8px; }
+  .chainbody { color:#c9cdd3; font-size:12.5px; line-height:1.5; }
+  a.chainlink { color:#e8b04b; text-decoration:underline dotted; text-underline-offset:2px; cursor:pointer; }
+  a.chainlink:hover { color:#ffc76b; text-decoration:underline solid; }
+
+  /* ---- Quest thumbnail that shrinks vertically to the quest's text (Re-roll + Search tabs) ----
+     .qthumb is a fixed-width box whose height follows the row - which the objective text drives - between
+     a 100px floor and the standard 177px cap. align-self:stretch makes it fill the row height; min-height
+     keeps very short quests from collapsing to a sliver. The <img> is absolutely positioned so its native
+     177px height can't force a floor on the row, and object-fit:cover CROPS to whatever height the box
+     lands at instead of stretching. Result: a short quest shows a slim horizontal crop, a tall one gets
+     the full 314x177 with the text continuing below. clip-path shaves the 2px baked-in frame and rounds
+     the corners. (History rows carry no image, so they never use this.) */
+  .qthumb { flex:none; width:314px; align-self:stretch; max-height:177px; min-height:100px;
+    position:relative; overflow:hidden; border-radius:10px; background:#2a2d34; }
+  .qthumb img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
+    clip-path: inset(2px round 10px); }
+
+  /* ---- Quest-giver column: the trader's portrait, in the slot the maps list used to occupy. The name
+     stays on the title line; this is the face only, so a trader's quests read as a group (Search sorts
+     by quest-giver by default). ---- */
+  .qgiver { flex:none; width:80px; align-self:flex-start; display:flex; justify-content:center; }
+  .giverpic { width:72px; height:72px; border-radius:8px; object-fit:cover; background:#2a2d34; }
+
+/* ---- Cross-page sidebar link (reroll <-> handbook), styled like a nav button ---- */
+a.pagelink { display:block; width:100%; box-sizing:border-box; text-align:left; text-decoration:none;
+  background:#23262c; color:#e6e6e6; border:1px solid #3a3e46; border-radius:6px; padding:8px 10px; font-size:14px; }
+a.pagelink:hover { border-color:#5a5f68; color:#ffc76b; }
+
+/* ---- Handbook page: one collapsible card per weapon/mod category ---- */
+.section-title { font-size:15px; margin:20px 0 10px; color:#cbb089; }
+.section-title:first-child { margin-top:0; }
+/* Cards tile into as many columns as the window allows, stacking both down and across, and re-flow to
+   fewer columns as it narrows (one column below ~340px of available width). align-items:start lets each
+   card keep its own height instead of stretching to its grid row. The empty/loading message spans the
+   full width so it isn't squeezed into a single 340px column. */
+#content { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(400px, 100%), 1fr)); gap:10px; align-items:start; }
+#content > .row { grid-column:1 / -1; }
+.hbcat { border:1px solid #3a3e46; border-radius:8px; overflow:hidden; }
+.hbcat > summary { list-style:none; cursor:pointer; padding:10px 14px; background:#23262c; font-weight:600;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.hbcat > summary::-webkit-details-marker { display:none; }
+.hbcat > summary:hover { background:#2a2d34; }
+.hbcat[open] > summary { border-bottom:1px solid #3a3e46; }
+.hbcount { color:#9aa0a6; font-size:12px; font-weight:400; }
+.hbtag { font-size:11px; border-radius:10px; padding:1px 8px; font-weight:600; }
+.hbtag.req { background:#23402a; color:#7fd694; border:1px solid #2f5c3b; }
+.hbtag.forb { background:#402323; color:#e88a8a; border:1px solid #5c2f2f; }
+.hbtag.any { background:#2a2113; color:#e8b04b; border:1px solid #6b4a1e; }
+.hbbody { padding:10px 14px 12px; }
+.hbmods { margin:0 0 8px; color:#c9cdd3; font-size:13px; }
+.hbmods b.req { color:#7fd694; } .hbmods b.forb { color:#e88a8a; }
+/* One item per line, top to bottom (was a multi-column flow). Only the top-level weapons/mods get a
+   bullet - the `>` keeps it off the nested equivalents, which get their own "=" marker below. */
+/* Handbook item links read as near-plain text (long lists of loud links are noise); the hover underline
+   and the link's own hover tooltip are the only "this is a link" cues. */
+a.itemlink { color:inherit; text-decoration:none; }
+a.itemlink:hover { text-decoration:underline; text-underline-offset:2px; }
+
+.hbitems { margin:0; padding:0; list-style:none; }
+.hbitems > li { color:#c9cdd3; font-size:13px; padding:1px 0; }
+.hbitems > li::before { content:"•"; color:#5a5f68; margin-right:6px; }
+.hbitems li.muted::before { content:none; }
+/* A weapon's equivalents: indented under it, "=" instead of a bullet, dimmer - "this counts too". */
+/* Info / turn-ins page: the per-item player breakdown. Like .hbequivs but with no "=" prefix - these
+   are "player — quest ×n" lines, not equivalents. */
+.tibreak { margin:1px 0 6px; padding-left:20px; list-style:none; }
+.tibreak li { color:#9aa0a6; font-size:12.5px; padding:1px 0; }
+.tiplayer { color:#c9cdd3; }
+.tiqty { color:#e8b04b; font-variant-numeric:tabular-nums; margin-left:4px; }
+.hbequivs { margin:1px 0 3px; padding-left:20px; list-style:none; }
+.hbequivs li { color:#9aa0a6; font-size:12.5px; padding:1px 0; }
+.hbequivs li::before { content:"="; color:#6b7280; margin-right:6px; }
+
+/* ---- Debug page: raw JSONC dumps ---- */
+/* Monospace, wrapping, scrollable block for a serialized+annotated dump. Sized to the window like
+   the .list boxes so it scrolls internally instead of pushing the page. */
+pre.dump { margin:0; border:1px solid #3a3e46; border-radius:8px; background:#16181c; color:#c9cdd3;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:12.5px; line-height:1.45;
+  padding:10px 12px; max-height:calc(100vh - 190px); overflow:auto; white-space:pre-wrap; word-break:break-word; }
+/* One collapsible quest card inside the debug quest list. Its <pre> gets no outer border (the card
+   already frames it) and sits flush under the summary. */
+.dcard { border-bottom:1px solid #2a2d34; }
+.dcard:last-child { border-bottom:none; }
+.dcard > summary { list-style:none; cursor:pointer; padding:10px 12px; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+.dcard > summary::-webkit-details-marker { display:none; }
+.dcard > summary:hover { background:#23262c; }
+.dcard[open] > summary { background:#23262c; }
+.dcard > pre.dump { border:none; border-radius:0; max-height:60vh; margin:0 4px 8px; }
+
+/* ---- Handbook: weapon-overlap comparison tool ---- */
+/* Spans the full grid width (the #content grid otherwise tiles it into a column). Picker on top,
+   results below - the picker's own list flows into as many columns as the width allows. */
+#content > .ovwrap { grid-column:1 / -1; display:flex; flex-direction:column; gap:14px; align-items:stretch; }
+.ovpicker { border:1px solid #3a3e46; border-radius:8px; overflow:hidden; }
+.ovpickhead { display:flex; justify-content:space-between; align-items:center; padding:8px 12px;
+  background:#23262c; font-weight:600; font-size:13px; border-bottom:1px solid #3a3e46; }
+/* The category toggles tile into 1/2/3/4+ columns depending on available width (auto-fill, ~230px each),
+   capped in height so a long list scrolls internally instead of pushing the results pane down. */
+.ovpicklist { max-height:46vh; overflow:auto; display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); }
+.ovrow { display:flex; align-items:center; gap:8px; padding:6px 12px; border-bottom:1px solid #2a2d34;
+  border-right:1px solid #2a2d34; cursor:pointer; font-size:13px; user-select:none; }
+.ovrow:hover { background:#23262c; }
+.ovrow.on { background:#2a2113; }
+.ovrow input { width:15px; height:15px; flex:none; }
+.ovname { flex:1; min-width:0; }
+.ovresults { min-width:0; }
+.ovsum { font-size:14px; color:#c9cdd3; margin:0 0 12px; }
+.ovselrow { margin-top:8px; display:flex; flex-wrap:wrap; gap:4px; }
+.ovhint { padding:8px 0; font-size:13px; }
+.ovlist > li { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:3px 0; }
+.ovlist > li.ovall .ovweap { color:#e8b04b; font-weight:600; }
+.ovweap { color:#e6e6e6; }
+.ovcount { color:#9aa0a6; font-size:11px; font-variant-numeric:tabular-nums; }
+.ovcats { display:flex; flex-wrap:wrap; gap:4px; }
+.hbtag.ovin, .hbtag.ovsel { background:#23262c; color:#9aa0a6; border:1px solid #3a3e46; font-weight:500; }
+.linkbtn { background:none; border:none; color:#e8b04b; cursor:pointer; font-size:12px; padding:0; }
+.linkbtn:hover { color:#ffc76b; text-decoration:underline; }
+
+/* Weapon-category card -> its mod-category card (internal deep link). */
+a.modlink { color:#e8b04b; text-decoration:underline dotted; text-underline-offset:2px; }
+a.modlink:hover { color:#ffc76b; text-decoration:underline solid; }
+/* Highlight on the card a hash link jumped to: snap to orange, hold, then fade out. */
+.hbcat.flash > summary { animation:hbflash-bg 3.5s ease-out forwards; }
+.hbcat.flash { animation:hbflash-border 3.5s ease-out forwards; }
+@keyframes hbflash-bg {
+  0% { background:#3a2f16; }
+  60% { background:#3a2f16; }
+  100% { background:transparent; }
+}
+@keyframes hbflash-border {
+  0% { border-color:#c8843c; }
+  60% { border-color:#c8843c; }
+  100% { border-color:transparent; }
+}

@@ -1,0 +1,70 @@
+/*
+ * Shared base stylesheet for every Leaves mod web UI, served at /webui/base.css by LeavesUtils
+ * (the hard dependency all the mods already share). Each page links this FIRST, then its own
+ * <style>/<link>, so anything page-specific still overrides what's here.
+ *
+ * Two jobs:
+ *   1. Design tokens - the one place the suite's palette + fonts are defined. New/edited page CSS
+ *      should reach for these var(--...) names instead of re-typing hex, so a palette tweak is a
+ *      one-file change. (Existing pages still carry their original hex; migrating them to the tokens
+ *      is a safe, incremental follow-up, not required for this to work.)
+ *   2. The handful of rules that were byte-identical across all pages (body colours/font, .muted,
+ *      mark, base link colour). Centralised here and dropped from the pages. Deliberately does NOT
+ *      include anything with page-specific spacing (form-control padding, .bar, layout), since those
+ *      genuinely differ per page and centralising them would fight the individual layouts.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest -> lightest */
+  --bg: #1b1d22;          /* page background */
+  --panel: #16181c;       /* sidebars, dropdowns, dump blocks */
+  --surface: #2a2d34;     /* inputs, buttons, chips */
+  --surface-2: #23262c;   /* row hover, inactive tabs */
+
+  /* Borders */
+  --border: #3a3e46;      /* standard control/panel border */
+  --border-dim: #2a2d34;  /* quiet dividers between rows */
+  --border-hover: #5a5f68;
+
+  /* Text */
+  --text: #e6e6e6;        /* primary */
+  --text-2: #c9cdd3;      /* secondary body copy */
+  --muted: #9aa0a6;       /* labels, hints, metadata */
+
+  /* Accents */
+  --accent: #c8843c;      /* primary orange: active tab, primary button, mark */
+  --accent-hover: #d9954d;
+  --gold: #e8b04b;        /* numbers, warnings, links */
+  --gold-dim: #cbb089;    /* brand text, section titles */
+  --link: #e8b04b;
+  --link-hover: #ffc76b;
+
+  /* Status */
+  --green: #7fd694;       /* positive / "requires" */
+  --green-bright: #6bd67b;
+  --red: #e88a8a;         /* negative / "forbids" */
+
+  /* Fonts */
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+/* Page baseline. Note: no `padding` here on purpose - pages set their own (the item browser wants
+   side padding, the sidebar/drop-zone layouts want none), and being linked first this loses to
+   whatever the page declares. */
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+/* Unstyled links pick up the theme's gold instead of browser blue; pages with their own link
+   classes (.objs a, .chainlink, ...) still override. */
+a { color: var(--link); }
+
+/* Universal helpers that were identical on every page that used them. */
+.muted { color: var(--muted); }
+mark { background: var(--accent); color: var(--bg); border-radius: 2px; padding: 0 1px; }

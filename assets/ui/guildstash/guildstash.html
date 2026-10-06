@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guild Stash</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Optional cross-mod nav rail (LeavesUtils). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+<style>
+  /* Two-pane layout: a left rail listing every stash (name + status, stacked vertically, QR-style) and a
+     main column showing the selected stash's item tree. */
+  .layout { display: flex; align-items: stretch; min-height: 100vh; }
+
+  /* Left sidebar: same metrics/tokens as the other Leaves pages (Barter/QR). */
+  .side { width: 220px; flex: none; box-sizing: border-box; background: var(--panel);
+          border-right: 1px solid var(--border-dim); padding: 18px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .side h1 { font-size: 17px; margin: 0 0 6px; color: var(--gold-dim); font-weight: 650; }
+  .side .sub { font-size: 13px; color: var(--muted); margin: 0; }
+  .side .btn { width: 100%; box-sizing: border-box; }
+  .sidesep { height: 1px; background: var(--border-dim); margin: 4px 0; }
+  .boxlist { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+
+  .boxrow { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border);
+            border-radius: 6px; background: var(--surface-2); cursor: pointer; }
+  .boxrow:hover { border-color: var(--border-hover); }
+  .boxrow.sel { border-color: var(--accent); background: var(--surface-2); }
+  .boxrow .binfo { flex: 1; min-width: 0; }
+  .boxrow .bname { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text); word-break: break-all; }
+  .boxrow .bsub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+  .spill { font-size: 10px; padding: 2px 7px; border-radius: 999px; white-space: nowrap; flex: 0 0 auto; text-transform: uppercase; letter-spacing: .03em; }
+  .spill.open { background: #24361f; color: #b6e6a0; border: 1px solid #3a5a3a; }
+  .spill.idle { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+  .main { flex: 1; min-width: 0; box-sizing: border-box; padding: 20px 22px; }
+  #err { color: #e6a3a3; font-size: 13px; margin: 6px 0; }
+  #placeholder { color: var(--muted); font-size: 14px; padding: 40px 0; text-align: center; }
+
+  .dhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .dhead .sid { font-size: 18px; font-weight: 650; color: var(--text); font-family: var(--font-mono); word-break: break-all; }
+  .btype { font-size: 11px; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+           background: var(--surface); color: var(--text-2); border: 1px solid var(--border); }
+  .btype.unknown { color: var(--muted); font-style: italic; }
+  .badge { font-size: 11px; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+  .badge.open { background: #24361f; color: #b6e6a0; border: 1px solid #3a5a3a; }
+  .badge.idle { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+  .dmeta { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .dmeta b { color: var(--text-2); font-weight: 600; }
+
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .bar input[type=text] { flex: 1; min-width: 200px; background: var(--surface-2); color: var(--text);
+        border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 14px; }
+  .btn { background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+         border-radius: 6px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  .btn:hover { border-color: var(--border-hover); color: var(--link-hover); }
+  .btn.danger { border-color: #6b2b2b; color: #e6a3a3; }
+  .btn.danger:hover { background: #3a1d1d; border-color: #a33; color: #ffd0d0; }
+  .bar select { background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 8px; font: inherit; font-size: 13px; flex: none; cursor: pointer; }
+  .filtertoggle { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--gold-dim);
+                  cursor: pointer; user-select: none; white-space: nowrap; }
+  .filtertoggle input { width: 16px; height: 16px; }
+
+  /* Item tree / flat list host */
+  .items { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+           max-height: calc(100vh - 210px); overflow: auto; }
+  .tree { list-style: none; margin: 0; padding: 0; }
+  .tree .tree { margin-left: 14px; border-left: 1px solid var(--border-dim); padding-left: 2px; }
+  .node { list-style: none; }
+  /* Rows get a faint full-width highlight on hover so the eye can track a name on the left across to its
+     count on the right (matters on ultrawide). Inset padding + a matching negative margin keep the tinted
+     band a touch wider than the text without shifting the layout. */
+  .trow { display: flex; align-items: baseline; gap: 6px; font-size: 13px; padding: 2px 6px; margin: 0 -6px;
+          border-radius: 5px; }
+  .trow:hover { background: var(--surface-2); }
+  .node.container > .trow { cursor: pointer; }
+  .node.container > .trow:hover .iname { color: var(--link-hover); }
+  .caret { flex: 0 0 auto; width: 12px; color: var(--muted); font-size: 10px; user-select: none;
+           transform: rotate(90deg); transition: transform .12s; }            /* expanded by default */
+  .node.container.collapsed > .trow > .caret { transform: none; }             /* collapsed = points right */
+  .caret-sp { flex: 0 0 auto; width: 12px; }
+  .iname { color: var(--text-2); }
+  .itag { color: var(--gold-dim); }
+  .icount { color: var(--muted); font-variant-numeric: tabular-nums; flex: 0 0 auto; margin-left: 4px; }
+  .kids { color: var(--muted); font-size: 11px; flex: 0 0 auto; margin-left: 2px; }
+  .node.container.collapsed > .children { display: none; }
+  mark { background: #4a3a12; color: #ffe08a; border-radius: 2px; padding: 0 1px; }
+
+  .flatlist { display: flex; flex-direction: column; }
+  .flatrow { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 6px;
+             margin: 0 -6px; border-radius: 5px; border-bottom: 1px solid var(--border-dim); }
+  .flatrow:hover { background: var(--surface-2); }
+  .flatrow:last-child { border-bottom: none; }
+  .empty-items { font-size: 12px; color: var(--muted); font-style: italic; padding: 6px 2px; }
+
+  @media (max-width: 760px) {
+    .layout { flex-direction: column; }
+    .side { width: auto; border-right: none; border-bottom: 1px solid var(--border); }
+    .boxlist { max-height: 200px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>🗃️ Guild Stash</h1>
+    <p class="sub">Shared storages on this server.</p>
+    <button class="btn" id="refresh">↻ Refresh</button>
+    <div class="sidesep"></div>
+    <div class="boxlist" id="boxlist"><div class="empty-items">Loading…</div></div>
+  </aside>
+
+  <main class="main">
+    <div id="err"></div>
+    <div id="detail"><div id="placeholder">Select a stash on the left.</div></div>
+  </main>
+</div>
+
+<script>
+  // itemSort: how item rows in the MAIN view are ordered - applies to the tree AND the flat list.
+  var state = { boxes: [], selectedId: null, search: "", flatten: false, itemSort: "name" };
+  var LS = { selected: "gs_selected", flatten: "gs_flatten", itemSort: "gs_itemsort" };
+
+  var errBox = document.getElementById("err");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function norm(s) { return String(s == null ? "" : s).toLowerCase(); }
+  function matches(name, f) { return !f || norm(name).indexOf(f) >= 0; }
+  // Escape, then highlight the first occurrence of the (already-lowercased) needle.
+  function hl(name, f) {
+    if (!f) { return esc(name); }
+    var i = norm(name).indexOf(f);
+    if (i < 0) { return esc(name); }
+    return esc(name.slice(0, i)) + "<mark>" + esc(name.slice(i, i + f.length)) + "</mark>" + esc(name.slice(i + f.length));
+  }
+  function fmtWhen(iso) {
+    if (!iso) { return ""; }
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString();
+  }
+  function currentBox() {
+    for (var i = 0; i < state.boxes.length; i++) {
+      if (state.boxes[i].id === state.selectedId) { return state.boxes[i]; }
+    }
+    return null;
+  }
+  function saveLS() {
+    try {
+      if (state.selectedId) { localStorage.setItem(LS.selected, state.selectedId); }
+      localStorage.setItem(LS.flatten, state.flatten ? "1" : "0");
+      localStorage.setItem(LS.itemSort, state.itemSort);
+    } catch (e) { /* private mode / disabled - non-fatal */ }
+  }
+
+  // Thousands separators - stack totals get big (a case of ammo runs to five figures).
+  function num(n) { return String(n == null ? 0 : n).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+
+  // Shared comparator for anything with a name + a count. Count sorts DESCENDING (biggest first, which is
+  // what you actually want from "most items"), and falls back to name so equal counts stay stable.
+  function byNameOrCount(mode) {
+    return function (a, b) {
+      if (mode === "count" && a.count !== b.count) { return b.count - a.count; }
+      return String(a.name).localeCompare(String(b.name));
+    };
+  }
+
+  // ---- Left rail -----------------------------------------------------------------------------------
+
+  function renderSidebar() {
+    var list = document.getElementById("boxlist");
+    if (!state.boxes.length) {
+      list.innerHTML = '<div class="empty-items">No stashes yet. Convert a case (<code>@r &lt;id&gt;;</code>) in-game.</div>';
+      return;
+    }
+    // Presentation ordering lives here, not in the API: open boxes first, then by id.
+    var boxes = state.boxes.slice().sort(function (a, b) {
+      if (a.open !== b.open) { return a.open ? -1 : 1; }
+      return String(a.id).localeCompare(String(b.id));
+    });
+    var html = "";
+    boxes.forEach(function (b) {
+      var sel = b.id === state.selectedId ? " sel" : "";
+      var status = b.open ? '<span class="spill open">open</span>' : '<span class="spill idle">closed</span>';
+      var sub = (b.boxType ? esc(b.boxType) : "unknown type") + " &middot; " + num(b.totalItems) +
+                (b.totalItems === 1 ? " entry" : " entries");
+      html += '<div class="boxrow' + sel + '" data-id="' + esc(b.id) + '">' +
+                '<div class="binfo"><div class="bname">' + esc(b.id) + '</div><div class="bsub">' + sub + '</div></div>' +
+                status +
+              '</div>';
+    });
+    list.innerHTML = html;
+    var rows = list.querySelectorAll(".boxrow");
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].addEventListener("click", function (e) { select(e.currentTarget.getAttribute("data-id")); });
+    }
+  }
+
+  function select(id) {
+    state.selectedId = id;
+    saveLS();
+    renderSidebar();
+    renderDetail();
+  }
+
+  // ---- Main detail ---------------------------------------------------------------------------------
+  function renderDetail() {
+    var host = document.getElementById("detail");
+    var box = currentBox();
+    if (!box) {
+      host.innerHTML = '<div id="placeholder">Select a stash on the left.</div>';
+      return;
+    }
+
+    var type = box.boxType ? '<span class="btype">' + esc(box.boxType) + '</span>'
+                           : '<span class="btype unknown">unknown type</span>';
+    var status = box.open ? '<span class="badge open">OPEN</span>' : '<span class="badge idle">idle</span>';
+
+    // Two numbers, because they answer different questions: entries = how many things are in here (a stack
+    // of 60 rounds is one entry), items = the stack sizes summed. Only show the second when it differs.
+    var meta = num(box.totalItems) + (box.totalItems === 1 ? " entry" : " entries");
+    if (box.totalUnits && box.totalUnits !== box.totalItems) {
+      meta += ' &middot; <b>' + num(box.totalUnits) + '</b> items counting stacks';
+    }
+    if (box.open) {
+      var who = box.holderNickname ? esc(box.holderNickname) : (box.holderId ? esc(box.holderId) : "unknown");
+      meta += ' &middot; held by <b>' + who + '</b>';
+      var when = fmtWhen(box.openedUtc);
+      if (when) { meta += ' since ' + esc(when); }
+    }
+
+    var foot = box.open ? '<button class="btn danger" id="forceclose">Force close</button>' : '';
+
+    host.innerHTML =
+      '<div class="dhead"><span class="sid">' + esc(box.id) + '</span>' + type + status + foot + '</div>' +
+      '<div class="dmeta">' + meta + '</div>' +
+      '<div class="bar">' +
+        '<input type="text" id="tsearch" placeholder="Search items…" autocomplete="off">' +
+        '<button class="btn" id="expandall">Expand all</button>' +
+        '<button class="btn" id="collapseall">Collapse all</button>' +
+        '<select id="itemsort" title="Sort items">' +
+          '<option value="name"' + (state.itemSort === "name" ? " selected" : "") + '>Sort: name</option>' +
+          '<option value="count"' + (state.itemSort === "count" ? " selected" : "") + '>Sort: most</option>' +
+        '</select>' +
+        '<label class="filtertoggle"><input type="checkbox" id="flatten"' + (state.flatten ? " checked" : "") + '> Flatten view</label>' +
+      '</div>' +
+      '<div class="items" id="treehost"></div>';
+
+    var ts = document.getElementById("tsearch");
+    ts.value = state.search;
+    ts.addEventListener("input", function () { state.search = ts.value; renderTreeHost(); });
+
+    document.getElementById("flatten").addEventListener("change", function (e) {
+      state.flatten = e.target.checked; saveLS(); renderTreeHost();
+    });
+    document.getElementById("itemsort").addEventListener("change", function (e) {
+      state.itemSort = e.target.value; saveLS(); renderTreeHost();
+    });
+    document.getElementById("expandall").addEventListener("click", function () { setAllCollapsed(false); });
+    document.getElementById("collapseall").addEventListener("click", function () { setAllCollapsed(true); });
+    if (box.open) {
+      document.getElementById("forceclose").addEventListener("click", function () { onForceClose(box.id); });
+    }
+
+    renderTreeHost();
+  }
+
+  function setAllCollapsed(collapsed) {
+    var nodes = document.querySelectorAll("#treehost .node.container");
+    for (var i = 0; i < nodes.length; i++) {
+      if (collapsed) { nodes[i].classList.add("collapsed"); }
+      else { nodes[i].classList.remove("collapsed"); }
+    }
+  }
+
+  function renderTreeHost() {
+    var host = document.getElementById("treehost");
+    if (!host) { return; }
+    var box = currentBox();
+    if (!box) { host.innerHTML = ""; return; }
+    var f = norm(state.search);
+
+    if (state.flatten) { host.innerHTML = renderFlat(box, f); return; }
+
+    var html = renderTreeNodes(box.tree, f);
+    if (html === "") { host.innerHTML = '<div class="empty-items">' + (f ? "no matches" : "empty") + '</div>'; return; }
+    host.innerHTML = html;
+
+    // Wire the collapse toggles (fresh DOM each render).
+    var toggles = host.querySelectorAll(".node.container > .trow");
+    for (var i = 0; i < toggles.length; i++) {
+      toggles[i].addEventListener("click", function (e) {
+        e.currentTarget.parentNode.classList.toggle("collapsed");
+      });
+    }
+  }
+
+  // Render a sibling list to nested <ul>. LEAF siblings of the same item (same tpl + tag, no children of
+  // their own - empty cases included) are MERGED into one row with their counts summed. Containers are kept
+  // individually and recursed. Returns "" when nothing survives the search filter (so empty branches vanish).
+  function renderTreeNodes(nodes, f) {
+    var containers = [];
+    var leafOrder = [];
+    var leaf = {};
+    nodes.forEach(function (n) {
+      if (n.children && n.children.length) {
+        containers.push(n);
+      } else {
+        var key = n.tpl + "|" + (n.tag || "");
+        if (!leaf[key]) { leaf[key] = { name: n.name, tag: n.tag, count: 0 }; leafOrder.push(key); }
+        leaf[key].count += (n.count || 1);
+      }
+    });
+
+    // Sort within each group, keeping containers above leaves - that grouping is structural, and mixing
+    // them would make a deep tree much harder to read. For a container "count" means how many children it
+    // holds, which is the number shown in its (N) badge.
+    var sortedContainers = containers.slice();
+    if (state.itemSort === "count") {
+      sortedContainers.sort(function (a, b) {
+        if (b.children.length !== a.children.length) { return b.children.length - a.children.length; }
+        return String(a.name).localeCompare(String(b.name));
+      });
+    } else {
+      sortedContainers.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+    }
+
+    var sortedLeaves = [];
+    leafOrder.forEach(function (key) { sortedLeaves.push(leaf[key]); });
+    sortedLeaves.sort(byNameOrCount(state.itemSort));
+
+    var parts = [];
+    sortedContainers.forEach(function (n) {
+      var inner = renderTreeNodes(n.children, f);
+      var selfMatch = matches(n.name, f);
+      if (f && !selfMatch && inner === "") { return; }   // no hit in this container's whole subtree
+      var label = '<span class="iname">' + hl(n.name, f) + '</span>';
+      if (n.tag) { label += ' <span class="itag">"' + esc(n.tag) + '"</span>'; }
+      parts.push(
+        '<li class="node container"><div class="trow"><span class="caret">&#9654;</span>' + label +
+          '<span class="kids">(' + n.children.length + ')</span></div>' +
+          '<div class="children">' + inner + '</div></li>'
+      );
+    });
+    sortedLeaves.forEach(function (g) {
+      if (f && !matches(g.name, f)) { return; }
+      var label = '<span class="iname">' + hl(g.name, f) + '</span>';
+      if (g.tag) { label += ' <span class="itag">"' + esc(g.tag) + '"</span>'; }
+      if (g.count > 1) { label += '<span class="icount">&times;' + g.count + '</span>'; }
+      parts.push('<li class="node leaf"><div class="trow"><span class="caret-sp"></span>' + label + '</div></li>');
+    });
+
+    if (!parts.length) { return ""; }
+    return '<ul class="tree">' + parts.join("") + "</ul>";
+  }
+
+  // Flatten: ignore hierarchy entirely - sum EVERY item (containers included) by tpl and list the totals.
+  function renderFlat(box, f) {
+    var groups = {};
+    var order = [];
+    function walk(nodes) {
+      nodes.forEach(function (n) {
+        if (!groups[n.tpl]) { groups[n.tpl] = { name: n.name, count: 0 }; order.push(n.tpl); }
+        groups[n.tpl].count += (n.count || 1);
+        if (n.children && n.children.length) { walk(n.children); }
+      });
+    }
+    walk(box.tree);
+
+    var rows = [];
+    order.forEach(function (tpl) { rows.push(groups[tpl]); });
+    rows.sort(byNameOrCount(state.itemSort));
+
+    var parts = [];
+    rows.forEach(function (g) {
+      if (f && !matches(g.name, f)) { return; }
+      parts.push('<div class="flatrow"><span class="iname">' + hl(g.name, f) +
+                 '</span><span class="icount">&times;' + g.count + '</span></div>');
+    });
+    if (!parts.length) { return '<div class="empty-items">' + (f ? "no matches" : "empty") + '</div>'; }
+    return '<div class="flatlist">' + parts.join("") + "</div>";
+  }
+
+  // ---- Force close ---------------------------------------------------------------------------------
+  function onForceClose(id) {
+    var ok = window.confirm(
+      "Force-close storage '" + id + "'?\n\n" +
+      "This properly closes the holder's open box: its contents are saved to the stash and the box goes " +
+      "back to closed. Nothing is duplicated.\n\n" +
+      "If the holder is currently ONLINE they will be kicked to the login screen, because their game is " +
+      "holding an inventory the server has just changed. Anything they were mid-way through moving may be lost.\n\n" +
+      "The stash contents are safe either way - the server's stash always wins over a client's copy. But if " +
+      "the holder is IN A RAID, the kick will throw them out of it. Boxes now close automatically on deploy, " +
+      "so a box open during a raid shouldn't happen; if you see one, prefer waiting until they're at the menu."
+    );
+    if (!ok) { return; }
+    fetch("/guildstash/api/forceclose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: id })
+    }).then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res && res.message) { errBox.textContent = res.message; }
+        load();
+      })
+      .catch(function (err) { errBox.textContent = "Force close failed: " + err; });
+  }
+
+  // ---- Load ----------------------------------------------------------------------------------------
+  function load() {
+    fetch("/guildstash/api/storages", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) { throw new Error("HTTP " + r.status); } return r.json(); })
+      .then(function (list) {
+        errBox.textContent = "";
+        state.boxes = list || [];
+        // Keep the current selection if it still exists; otherwise fall back to the first stash.
+        if (!currentBox()) { state.selectedId = state.boxes.length ? state.boxes[0].id : null; }
+        renderSidebar();
+        renderDetail();
+      })
+      .catch(function (err) { errBox.textContent = "Could not load storages: " + err; });
+  }
+
+  // Restore remembered view prefs, then load.
+  try {
+    var s = localStorage.getItem(LS.selected); if (s) { state.selectedId = s; }
+    state.flatten = localStorage.getItem(LS.flatten) === "1";
+    var is = localStorage.getItem(LS.itemSort);
+    if (is === "name" || is === "count") { state.itemSort = is; }
+  } catch (e) { /* ignore */ }
+
+  document.getElementById("refresh").addEventListener("click", load);
+  load();
+</script>
+</body>
+</html>

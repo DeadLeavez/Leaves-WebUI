@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LootFuckery dump viewer</title>
+<link rel="stylesheet" href="/webui/base.css">
+<style>
+  /* palette tokens, body baseline, .muted and mark come from the shared /webui/base.css (linked first). */
+  * { box-sizing: border-box; }
+
+  /* ---- drop zone (shown until a dump is loaded) ---- */
+  #drop { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+          gap:14px; text-align:center; padding:24px; transition:background .12s; }
+  /* An explicit `display` in author CSS beats the UA stylesheet's `[hidden] { display:none }`, so
+     without these the overlay stays on top after loading and eats every click. */
+  #drop[hidden], #app[hidden] { display:none !important; }
+  #drop.hot { background:#23262c; }
+  #drop h1 { font-size:22px; margin:0; }
+  #drop p { color:#9aa0a6; margin:0; max-width:520px; line-height:1.5; font-size:14px; }
+  #drop .zone { border:2px dashed #3a3e46; border-radius:14px; padding:36px 52px; cursor:pointer; }
+  #drop .zone:hover { border-color:#c8843c; }
+  #err { color:#ff6b6b; font-size:13px; min-height:18px; }
+
+  /* ---- app chrome ---- */
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+           padding:14px 20px; background:#16181c; border-bottom:1px solid #2a2d34; }
+  header h1 { font-size:17px; margin:0; }
+  .meta { color:#9aa0a6; font-size:12.5px; }
+  .spacer { flex:1; }
+  .tabs { display:flex; gap:6px; }
+  button, select, input[type=text] { background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46;
+                                     border-radius:6px; padding:7px 10px; font-size:13.5px; }
+  button { cursor:pointer; }
+  button:hover { border-color:#5a5f68; }
+  .tab.active { background:#c8843c; border-color:#c8843c; color:#1b1d22; font-weight:600; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px 20px;
+         border-bottom:1px solid #2a2d34; }
+  #search { flex:1; min-width:200px; }
+
+  /* ---- stats ---- */
+  .stats { display:flex; gap:22px; flex-wrap:wrap; padding:12px 20px; border-bottom:1px solid #2a2d34; }
+  .stat b { display:block; font-size:18px; }
+  .stat span { color:#9aa0a6; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; }
+
+  main { padding:14px 20px 40px; }
+  .pane { display:none; }
+  .pane.active { display:block; }
+
+  /* ---- collapsible sections ---- */
+  .sec { border:1px solid #3a3e46; border-radius:8px; margin-bottom:8px; overflow:hidden; }
+  .sec > .head { display:flex; align-items:center; gap:10px; padding:9px 12px; cursor:pointer;
+                 background:#23262c; user-select:none; }
+  .sec > .head:hover { background:#282c33; }
+  .sec > .head .caret { color:#9aa0a6; width:10px; flex:none; }
+  .sec > .head .nm { font-weight:600; }
+  .sec > .head .sub { color:#9aa0a6; font-size:12px; }
+  .sec > .head .val { margin-left:auto; color:#e8b04b; font-variant-numeric:tabular-nums; }
+  .sec > .body { display:none; }
+  .sec.open > .body { display:block; }
+  .sec .sec { margin:0; border:none; border-top:1px solid #2a2d34; border-radius:0; }
+  /* Three levels deep now (group > category > items) - shade + indent each step so the
+     hierarchy is readable without extra chrome. */
+  .sec > .head { background:#272b33; }
+  .sec .sec > .head { background:#212429; padding-left:26px; }
+  .sec .sec .sec > .head { background:#1d2025; padding-left:40px; }
+  .sec .sec table th, .sec .sec table td { padding-left:26px; }
+  .sec .sec .sec table th, .sec .sec .sec table td { padding-left:40px; }
+  .sec > .head .cnt { color:#9aa0a6; font-size:12px; }
+
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:5px 12px; font-size:13px; border-top:1px solid #22252b; }
+  th { color:#9aa0a6; font-weight:500; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable:hover { color:#e6e6e6; }
+  th.sorted { color:#c8843c; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tbody tr:hover { background:#20242a; }
+  .pos { color:#6bd67b; }
+  .neg { color:#ff8b6b; }
+  .mono { font-family:ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  td.id { color:#7d848d; font-size:11.5px; }
+  .idtag { color:#6f757e; font-size:11px; font-weight:400; }
+  .chk { display:flex; align-items:center; gap:6px; font-size:13px; color:#c9ced6;
+         background:#2a2d34; border:1px solid #3a3e46; border-radius:6px; padding:6px 10px;
+         cursor:pointer; user-select:none; }
+  .chk input { accent-color:#c8843c; margin:0; }
+
+  /* ---- server-dump picker (added for the LootFuckery web UI) ---- */
+  .server { margin-top:18px; display:flex; flex-direction:column; gap:8px; align-items:center; }
+  .server .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center; }
+  .server select { min-width:280px; max-width:70vw; }
+  .server .hint { color:#9aa0a6; font-size:12px; }
+  .navlinks { display:flex; gap:8px; }
+</style>
+<!-- Shared cross-mod nav rail (Leaves-WebUI). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+</head>
+<body>
+
+<div id="drop">
+  <h1>LootFuckery dump viewer</h1>
+  <div class="zone" id="zone">
+    <div style="font-size:34px">📦</div>
+    <div><b>Drop a dump JSON here</b> — or click to pick</div>
+    <div class="muted" style="font-size:12.5px;margin-top:6px">Drop <b>two</b> files to compare them</div>
+  </div>
+  <p>Reads the <code>loot_&lt;map&gt;_&lt;timestamp&gt;.json</code> files from
+     <code>Leaves-LootFuckery/output/</code>. Everything runs locally in this file — nothing is uploaded.</p>
+
+  <div class="server">
+    <div class="row">
+      <select id="serverDump"><option value="">Loading server dumps…</option></select>
+      <button id="loadServer">Load</button>
+      <button id="refreshDumps" title="Rescan output/ for dumps">↻</button>
+    </div>
+    <div class="hint" id="serverHint">Or pick one of the latest dumps generated on the server.</div>
+    <div class="navlinks"><a href="/lootfuckery/ui/history">→ Real-run history</a></div>
+  </div>
+
+  <div id="err"></div>
+  <input type="file" id="picker" accept=".json,application/json" multiple hidden>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1 id="h-map">—</h1>
+    <div class="meta" id="h-meta"></div>
+    <div class="spacer"></div>
+    <div class="tabs">
+      <button class="tab active" data-tab="loose">Loose loot</button>
+      <button class="tab" data-tab="containers">Containers</button>
+      <button class="tab" data-tab="diff" id="tab-diff" hidden>Compare</button>
+    </div>
+    <button id="another">Load another…</button>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="bar">
+    <input type="text" id="search" placeholder="Search items…" autocomplete="off">
+    <select id="sort">
+      <option value="value">Sort by value</option>
+      <option value="avg">Sort by avg count</option>
+      <option value="name">Sort by name</option>
+    </select>
+    <button id="expand">Expand all</button>
+    <button id="collapse">Collapse all</button>
+    <label class="chk" title="Keep categories, groups & containers in A–Z order regardless of the item sort">
+      <input type="checkbox" id="az"> A–Z categories</label>
+    <label class="chk" id="lbl-merge" title="Pool every container's contents into a single tree">
+      <input type="checkbox" id="merge"> Merge containers</label>
+    <label class="chk" title="Show template ids next to every item, category and group">
+      <input type="checkbox" id="showids"> Show IDs</label>
+  </div>
+
+  <main>
+    <div class="pane active" id="pane-loose"></div>
+    <div class="pane" id="pane-containers"></div>
+    <div class="pane" id="pane-diff"></div>
+  </main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const rxEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const fmt = n => (Math.round(n) || 0).toLocaleString();
+const fmtAvg = n => (n ?? 0).toFixed(2);
+function hl(text, f) {
+  const e = esc(text);
+  if (!f) return e;
+  return e.replace(new RegExp(rxEsc(esc(f)), 'gi'), m => `<mark>${m}</mark>`);
+}
+
+// Group/category names come straight out of the item tree as EFT's internal node names
+// ("BarterItem", "AssaultRifle"). Item names are properly localized and must NOT go through this.
+const NAME_FIXUPS = {
+  Mod: 'Weapon mods', BarterItem: 'Barter items', FoodDrink: 'Food & drink',
+  SpecItem: 'Special items', ThrowWeap: 'Throwables', AmmoBox: 'Ammo boxes',
+  Smg: 'SMG', Info: 'Intel', Flyer: 'Flyers', Money: 'Money', Meds: 'Meds',
+  SimpleContainer: 'Containers', Key: 'Keys', Weapon: 'Weapons', Equipment: 'Equipment',
+};
+const pretty = n => NAME_FIXUPS[n] || String(n ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+
+// ---------- toolbar prefs ----------
+// A file:// page can't use cookies - Chrome drops them silently - but localStorage does work here and
+// is shared by every file:// page, so toolbar state survives closing and reopening the viewer.
+// Wrapped in try/catch because storage can be disabled (private windows, hardened settings); losing
+// persistence is fine, throwing on startup is not.
+const PREFS_KEY = 'lootviewer.prefs';
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      merge: $('#merge').checked, showids: $('#showids').checked, sort: $('#sort').value,
+      az: $('#az').checked,
+    }));
+  } catch { /* storage unavailable - toggles just won't persist */ }
+}
+function applyPrefs() {
+  let p;
+  try { p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch { return; }
+  if (typeof p.merge === 'boolean') $('#merge').checked = p.merge;
+  if (typeof p.showids === 'boolean') $('#showids').checked = p.showids;
+  if (typeof p.az === 'boolean') $('#az').checked = p.az;
+  if (p.sort && [...$('#sort').options].some(o => o.value === p.sort)) $('#sort').value = p.sort;
+}
+
+// Toolbar toggles, read at render time.
+const showIds = () => $('#showids').checked;
+// When on, categories/groups/containers stay alphabetical no matter the item sort (items still follow it).
+const azCats = () => $('#az').checked;
+const idTag = id => showIds() ? ` <span class="idtag mono">${esc(id)}</span>` : '';
+
+let dumpA = null, dumpB = null;
+
+// Which collapsible sections are expanded, tracked by a stable key (scope/groupId/catId) instead of
+// living only in the DOM - so a re-render (re-sort, search, header click, toggles) restores exactly
+// what the user had open instead of collapsing everything. Cleared when a fresh dump is loaded.
+let openKeys = new Set();
+
+// ---------- barter tiers (soft dependency on Leaves-BarterEconomy) ----------
+// BarterEconomy publishes its payment tier list at /bartereconomy/api/tiers as { "<itemId>": tier }.
+// It's optional: if that mod isn't installed the fetch fails and TIERS stays null, in which case the
+// tier column and the tier-value stats are simply omitted. tier = the item's barter value bucket
+// (higher = worth more); items outside a barterable category have no tier.
+let TIERS = null;
+const itemTier = id => (TIERS && id in TIERS) ? TIERS[id] : null;
+// "Tier value" = how much loot-frequency the item contributes weighted by barter desirability:
+// avg per raid × tier. Untiered items contribute nothing.
+const itemTierValue = i => { const t = itemTier(i.id); return t == null ? 0 : i.avg * t; };
+function loadTiers() {
+  fetch('/bartereconomy/api/tiers')
+    .then(r => r.ok ? r.json() : null)
+    .then(map => {
+      if (map && typeof map === 'object' && Object.keys(map).length) {
+        TIERS = map;
+        ensureTierSortOptions();
+        if (!$('#app').hidden) render(); // a dump is already showing - fold the tiers in
+      }
+    })
+    .catch(() => { /* BarterEconomy not installed / endpoint down - tiers stay off */ });
+}
+// The tier sort options only make sense once the tier list is loaded, so they're added on demand
+// rather than sitting dead in the dropdown when BarterEconomy isn't installed. Also re-applies a saved
+// tier-sort preference that applyPrefs had to skip because these options didn't exist yet.
+function ensureTierSortOptions() {
+  const sel = $('#sort');
+  if ([...sel.options].some(o => o.value === 'tiervalue')) return;
+  sel.add(new Option('Sort by tier', 'tier'));
+  sel.add(new Option('Sort by tier value', 'tiervalue'));
+  try {
+    const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+    if (p.sort === 'tier' || p.sort === 'tiervalue') sel.value = p.sort;
+  } catch { /* storage unavailable */ }
+}
+loadTiers();
+
+// ---------- loading ----------
+// Validate a parsed dump and tag it with the source name (file or server filename).
+function validateDump(d, fileName) {
+  if (!d || !Array.isArray(d.looseLoot) || !Array.isArray(d.containers)) {
+    throw new Error(`${fileName} isn't a LootFuckery dump (expected looseLoot + containers).`);
+  }
+  d._file = fileName;
+  return d;
+}
+// Swap in one or two dumps (dump B enables the compare tab) and show the app. Shared by the file-drop
+// path and the server picker.
+function applyDumps(dumps) {
+  dumpA = dumps[0]; dumpB = dumps[1] || null;
+  openKeys.clear(); // a new dump starts fully collapsed
+  $('#err').textContent = '';
+  $('#drop').hidden = true; $('#app').hidden = false;
+  $('#tab-diff').hidden = !dumpB;
+  selectTab('loose');
+  render();
+}
+function readFiles(files) {
+  const list = [...files].filter(f => /\.json$/i.test(f.name)).slice(0, 2);
+  if (!list.length) { $('#err').textContent = 'Please drop .json dump file(s).'; return; }
+  Promise.all(list.map(f => f.text().then(t => validateDump(JSON.parse(t), f.name))))
+    .then(applyDumps)
+    .catch(e => { $('#err').textContent = e.message || String(e); });
+}
+
+// ---------- server dumps ----------
+// The mod serves the latest loot_<map>_<timestamp>.json files from output/ over /lootfuckery/api.
+// If this page is opened as a bare file:// (no server), these fetches just fail and we fall back to
+// the drag-drop flow, so the viewer still works standalone.
+function loadServerDumps() {
+  const sel = $('#serverDump');
+  fetch('/lootfuckery/api/dumps').then(r => r.json()).then(list => {
+    if (!Array.isArray(list) || !list.length) {
+      sel.innerHTML = '<option value="">No server dumps found</option>';
+      $('#serverHint').textContent = 'No dumps in output/ yet — run a dataDump, or drop a file above.';
+      return;
+    }
+    sel.innerHTML = list.map(d =>
+      `<option value="${esc(d.file)}">${esc(d.map)} — ${esc(d.generated || d.file)}</option>`).join('');
+    $('#serverHint').textContent = `${list.length} dump${list.length === 1 ? '' : 's'} on the server.`;
+  }).catch(() => {
+    sel.innerHTML = '<option value="">(server API unavailable)</option>';
+    $('#serverHint').textContent = 'Server API not reachable — drag a file above instead.';
+  });
+}
+function loadSelectedServerDump() {
+  const file = $('#serverDump').value;
+  if (!file) return;
+  fetch('/lootfuckery/api/dump?file=' + encodeURIComponent(file))
+    .then(r => { if (!r.ok) throw new Error('Server returned ' + r.status); return r.json(); })
+    .then(d => applyDumps([validateDump(d, file)]))
+    .catch(e => { $('#err').textContent = e.message || String(e); });
+}
+$('#loadServer').addEventListener('click', loadSelectedServerDump);
+$('#refreshDumps').addEventListener('click', loadServerDumps);
+loadServerDumps();
+$('#zone').addEventListener('click', () => $('#picker').click());
+$('#picker').addEventListener('change', e => readFiles(e.target.files));
+$('#another').addEventListener('click', () => { $('#app').hidden = true; $('#drop').hidden = false; loadServerDumps(); });
+['dragenter','dragover'].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault(); $('#drop').classList.add('hot');
+}));
+['dragleave','drop'].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault(); if (ev === 'dragleave' && e.relatedTarget) return; $('#drop').classList.remove('hot');
+}));
+document.addEventListener('drop', e => { if (e.dataTransfer?.files?.length) readFiles(e.dataTransfer.files); });
+
+// ---------- shared rendering ----------
+// The per-item number a given sort mode ranks by (also summed to order categories/groups). "value" is
+// expected roubles per raid, the number that actually tells you whether something is over-tuned; the
+// tier modes need BarterEconomy's tier list and fall back to 0 when it's absent.
+function itemMetric(i, mode) {
+  if (mode === 'avg') return i.avg;
+  if (mode === 'tier') { const t = itemTier(i.id); return t == null ? 0 : t; }
+  if (mode === 'tiervalue') return itemTierValue(i);
+  return i.value; // 'value' and 'name' (name orders by string, but totals still use value)
+}
+// Sort comparator driven by the toolbar.
+function cmp(mode) {
+  if (mode === 'name') return (a, b) => a.name.localeCompare(b.name);
+  return (a, b) => itemMetric(b, mode) - itemMetric(a, mode);
+}
+const matches = (item, f) => LeavesSearch.test((item.name || '') + ' ' + (item.id || ''), f);
+
+// A clickable column header: clicking sets that sort mode (wired by the delegated handler below).
+// `numeric` right-aligns it like the other number columns; the active column is highlighted + arrowed.
+function sortableTh(label, mode, numeric) {
+  const active = $('#sort').value === mode;
+  return `<th class="${numeric ? 'num ' : ''}sortable${active ? ' sorted' : ''}" data-sort="${mode}">`
+    + `${label}${active ? ' ▾' : ''}</th>`;
+}
+
+function itemTable(items, f) {
+  const ids = showIds();
+  const tc = !!TIERS; // tier columns only when BarterEconomy's tier list is available
+  return `<table><thead><tr>
+      ${sortableTh('Item', 'name', false)}${ids ? '<th>ID</th>' : ''}
+      ${sortableTh('Avg', 'avg', true)}<th class="num">Max</th>
+      <th class="num">Unit ₽</th>${sortableTh('Value ₽', 'value', true)}
+      ${tc ? sortableTh('Tier', 'tier', true) + sortableTh('Tier val', 'tiervalue', true) : ''}</tr></thead><tbody>`
+    + items.map(i => {
+        const t = itemTier(i.id);
+        return `<tr>
+        <td>${hl(i.name, f)}</td>
+        ${ids ? `<td class="id mono">${hl(i.id, f)}</td>` : ''}
+        <td class="num">${fmtAvg(i.avg)}</td>
+        <td class="num muted">${i.max}</td>
+        <td class="num muted">${fmt(i.unitPrice)}</td>
+        <td class="num">${fmt(i.value)}</td>
+        ${tc ? `<td class="num muted">${t == null ? '—' : t}</td>
+                <td class="num">${t == null ? '—' : fmtAvg(i.avg * t)}</td>` : ''}</tr>`;
+      }).join('')
+    + '</tbody></table>';
+}
+
+// A collapsible section. `open` forces it open (search + Expand all); otherwise it opens if its stable
+// `key` is in openKeys, so its expanded state survives re-renders. The key is stamped as data-key so the
+// click/expand/collapse handlers can update openKeys.
+function section(title, sub, value, inner, open, key) {
+  const isOpen = open || (key != null && openKeys.has(key));
+  return `<div class="sec${isOpen ? ' open' : ''}"${key != null ? ` data-key="${esc(key)}"` : ''}>
+      <div class="head"><span class="caret">▶</span><span class="nm">${title}</span>
+        <span class="sub">${sub}</span><span class="val">${value}</span></div>
+      <div class="body">${inner}</div>
+    </div>`;
+}
+
+// Filter + sort a list of categories, dropping any that end up empty.
+function prepCategories(categories, f, sortMode) {
+  return categories
+    .map(c => ({ ...c, items: c.items.filter(i => matches(i, f)).sort(cmp(sortMode)) }))
+    .filter(c => c.items.length)
+    .sort((a, b) => (azCats() || sortMode === 'name')
+      ? a.name.localeCompare(b.name)
+      : b.items.reduce((s, i) => s + itemMetric(i, sortMode), 0)
+        - a.items.reduce((s, i) => s + itemMetric(i, sortMode), 0));
+}
+
+// Same treatment one level up: filter each group's categories, drop empty groups, sort.
+function prepGroups(groups, f, sortMode) {
+  return groups
+    .map(g => ({ ...g, categories: prepCategories(g.categories || [], f, sortMode) }))
+    .filter(g => g.categories.length)
+    .sort((a, b) => (azCats() || sortMode === 'name') ? a.name.localeCompare(b.name)
+                                        : groupTotal(b, sortMode) - groupTotal(a, sortMode));
+}
+const catTotal   = (c, mode) => c.items.reduce((s, i) => s + itemMetric(i, mode), 0);
+const groupTotal = (g, mode) => g.categories.reduce((s, c) => s + catTotal(c, mode), 0);
+
+// group > category > item table. `scope` namespaces the section keys (e.g. "loose", "cont:Jacket") so
+// the same group/category id opened in one pane doesn't force it open in another.
+function groupSections(groups, f, scope) {
+  return groups.map(g => {
+    const cats = g.categories.map(c => section(esc(pretty(c.name)) + idTag(c.id),
+      `<span class="cnt">${c.items.length} item${c.items.length === 1 ? '' : 's'}</span>`,
+      fmt(catTotal(c, 'value')) + ' ₽', itemTable(c.items, f), !!f, `${scope}/${g.id}/${c.id}`)).join('');
+    const n = g.categories.reduce((s, c) => s + c.items.length, 0);
+    return section(esc(pretty(g.name)) + idTag(g.id),
+      `<span class="cnt">${g.categories.length} categor${g.categories.length === 1 ? 'y' : 'ies'} · ${n} items</span>`,
+      fmt(groupTotal(g, 'value')) + ' ₽', cats, !!f, `${scope}/${g.id}`);
+  }).join('');
+}
+
+// Pool every container's contents into one group>category>item tree. Counts are summed because each
+// container's avg is already "per raid", so the total across containers is the per-raid expectation
+// for that item in containers overall. Max is the largest single-container max, not a sum - summing
+// per-container maxima would describe a raid that never happened.
+function mergeContainers(containers) {
+  const groups = new Map();
+  for (const c of containers) {
+    for (const g of c.contents) {
+      let G = groups.get(g.id);
+      if (!G) groups.set(g.id, G = { id: g.id, name: g.name, cats: new Map() });
+      for (const cat of g.categories) {
+        let C = G.cats.get(cat.id);
+        if (!C) G.cats.set(cat.id, C = { id: cat.id, name: cat.name, items: new Map() });
+        for (const it of cat.items) {
+          const prev = C.items.get(it.id);
+          if (prev) {
+            prev.avg += it.avg;
+            prev.value += it.value;
+            prev.max = Math.max(prev.max, it.max);
+          } else {
+            C.items.set(it.id, { ...it });
+          }
+        }
+      }
+    }
+  }
+  return [...groups.values()].map(G => ({
+    id: G.id, name: G.name, value: 0,
+    categories: [...G.cats.values()].map(C => ({ id: C.id, name: C.name, value: 0, items: [...C.items.values()] })),
+  }));
+}
+
+// Every item in a dump, regardless of nesting.
+const allItems = groups => groups.flatMap(g => (g.categories || []).flatMap(c => c.items));
+
+function render() {
+  const f = $('#search').value.toLowerCase().trim();
+  const sortMode = $('#sort').value;
+  const d = dumpA;
+
+  $('#h-map').textContent = d.map;
+  $('#h-meta').innerHTML = `${d.runs} runs &middot; ${esc((d.generatedUtc || '').replace('T', ' ').slice(0, 19))} UTC`
+    + `<br>${esc(d._file)}${dumpB ? ' &nbsp;vs&nbsp; ' + esc(dumpB._file) : ''}`;
+
+  // ---- stats ----
+  const looseItems = allItems(d.looseLoot);
+  const looseVal = looseItems.reduce((s, i) => s + i.value, 0);
+  const contItems = d.containers.flatMap(c => allItems(c.contents));
+  const contVal = contItems.reduce((s, i) => s + i.value, 0);
+  const stats = [
+    ['Loose value / raid', fmt(looseVal) + ' ₽'],
+    ['Container value / raid', fmt(contVal) + ' ₽'],
+    ['Total value / raid', fmt(looseVal + contVal) + ' ₽'],
+    ['Loose item types', looseItems.length.toLocaleString()],
+    ['Container types', d.containers.length.toLocaleString()],
+  ];
+  // Barter-tier totals (only when BarterEconomy's tier list is loaded): avg × tier summed over items.
+  if (TIERS) {
+    const looseTier = looseItems.reduce((s, i) => s + itemTierValue(i), 0);
+    const contTier = contItems.reduce((s, i) => s + itemTierValue(i), 0);
+    stats.push(
+      ['Loose tier value', fmt(looseTier)],
+      ['Container tier value', fmt(contTier)],
+      ['Total tier value', fmt(looseTier + contTier)],
+    );
+  }
+  $('#stats').innerHTML = stats
+    .map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+
+  // ---- loose loot ----
+  const groups = prepGroups(d.looseLoot, f, sortMode);
+  $('#pane-loose').innerHTML = groups.length
+    ? groupSections(groups, f, 'loose')
+    : '<p class="muted">No matching items.</p>';
+
+  // ---- containers ----
+  if ($('#merge').checked) {
+    const merged = prepGroups(mergeContainers(d.containers), f, sortMode);
+    $('#pane-containers').innerHTML = merged.length
+      ? `<p class="muted" style="margin-top:0">Contents of all
+           <b>${d.containers.length}</b> container types pooled together.</p>` + groupSections(merged, f, 'merged')
+      : '<p class="muted">No matching items.</p>';
+  } else {
+  const conts = d.containers
+    .map(c => ({ ...c, groups: prepGroups(c.contents, f, sortMode) }))
+    .filter(c => c.groups.length || (!f && !c.contents.length))
+    .sort((a, b) => (azCats() || sortMode === 'name') ? a.name.localeCompare(b.name) : b.avg - a.avg);
+  $('#pane-containers').innerHTML = conts.length
+    ? conts.map(c => {
+        const val = c.groups.reduce((s, g) => s + groupTotal(g, 'value'), 0);
+        const ckey = 'cont:' + c.name;
+        const inner = c.groups.length
+          ? groupSections(c.groups, f, ckey)
+          : '<p class="muted" style="padding:8px 12px">Nothing spawned inside this container.</p>';
+        return section(hl(c.name, f), `<span class="cnt">avg ${fmtAvg(c.avg)} &middot; max ${c.max}</span>`,
+                       fmt(val) + ' ₽', inner, !!f, ckey);
+      }).join('')
+    : '<p class="muted">No matching items.</p>';
+  }
+
+  if (dumpB) renderDiff(f, sortMode);
+}
+
+// ---------- compare ----------
+// Loose loot only, deliberately: this mod edits loose loot, so that's where a config change shows up.
+// Container contents are static, so diffing them would just show sampling noise.
+function renderDiff(f, sortMode) {
+  const flat = d => new Map(allItems(d.looseLoot).map(i => [i.id, i]));
+  const A = flat(dumpA), B = flat(dumpB);
+  const rows = [];
+  for (const id of new Set([...A.keys(), ...B.keys()])) {
+    const a = A.get(id), b = B.get(id);
+    const name = (a || b).name;
+    if (!LeavesSearch.test(name + ' ' + id, f)) continue;
+    const av = a?.avg ?? 0, bv = b?.avg ?? 0;
+    if (Math.abs(bv - av) < 1e-9) continue;
+    rows.push({ id, name, avgA: av, avgB: bv, d: bv - av,
+                pct: av ? (bv - av) / av * 100 : null });
+  }
+  rows.sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+  $('#pane-diff').innerHTML = rows.length
+    ? `<p class="muted" style="margin-top:0">Loose-loot changes only — container loot isn't edited by this mod.
+        <b>${esc(dumpA._file)}</b> → <b>${esc(dumpB._file)}</b></p>
+       <table><thead><tr><th>Item</th>${showIds() ? '<th>ID</th>' : ''}<th class="num">Before</th><th class="num">After</th>
+         <th class="num">Δ</th><th class="num">Δ%</th></tr></thead><tbody>`
+      + rows.map(r => `<tr><td>${hl(r.name, f)}</td>
+          ${showIds() ? `<td class="id mono">${hl(r.id, f)}</td>` : ''}
+          <td class="num muted">${fmtAvg(r.avgA)}</td>
+          <td class="num">${fmtAvg(r.avgB)}</td>
+          <td class="num ${r.d > 0 ? 'pos' : 'neg'}">${r.d > 0 ? '+' : ''}${fmtAvg(r.d)}</td>
+          <td class="num ${r.d > 0 ? 'pos' : 'neg'}">${r.pct === null ? '—' : (r.pct > 0 ? '+' : '') + r.pct.toFixed(0) + '%'}</td>
+        </tr>`).join('')
+      + '</tbody></table>'
+    : '<p class="muted">No differences in loose loot.</p>';
+}
+
+// ---------- wiring ----------
+function selectTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+  // The merge toggle only means anything on the containers tab.
+  $('#lbl-merge').style.display = name === 'containers' ? '' : 'none';
+}
+selectTab('loose');
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => selectTab(t.dataset.tab)));
+// A full dump is ~8k rows, and every keystroke re-renders them - debounce so typing stays smooth.
+let searchTimer;
+$('#search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(render, 120);
+});
+const onToggle = () => { savePrefs(); render(); };
+$('#sort').addEventListener('change', onToggle);
+$('#merge').addEventListener('change', onToggle);
+$('#showids').addEventListener('change', onToggle);
+$('#az').addEventListener('change', onToggle);
+$('#expand').addEventListener('click', () => document.querySelectorAll('.pane.active .sec').forEach(s => {
+  s.classList.add('open'); if (s.dataset.key) openKeys.add(s.dataset.key);
+}));
+$('#collapse').addEventListener('click', () => document.querySelectorAll('.pane.active .sec').forEach(s => {
+  s.classList.remove('open'); if (s.dataset.key) openKeys.delete(s.dataset.key);
+}));
+// One delegated handler for every collapsible - stopPropagation keeps a nested section from also
+// toggling its parent. openKeys mirrors the DOM so the state survives the next re-render.
+document.addEventListener('click', e => {
+  const head = e.target.closest('.sec > .head');
+  if (!head) return;
+  e.stopPropagation();
+  const sec = head.parentElement;
+  sec.classList.toggle('open');
+  const key = sec.dataset.key;
+  if (key) { if (sec.classList.contains('open')) openKeys.add(key); else openKeys.delete(key); }
+});
+// Clicking a sortable column header just drives the same sort dropdown, so the two stay in sync.
+document.addEventListener('click', e => {
+  const th = e.target.closest('th.sortable');
+  if (!th || $('#sort').value === th.dataset.sort) return;
+  $('#sort').value = th.dataset.sort;
+  savePrefs();
+  render();
+});
+</script>
+</body>
+</html>

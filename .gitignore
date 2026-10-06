@@ -1,0 +1,49 @@
+# ============================================================================
+#  Shared .gitignore for all my mods
+#  Edit only this file (4.0 Mods/.gitignore.shared).
+#  Directory.Build.targets copies it into each project as .gitignore on build
+# ============================================================================
+
+# Build output
+/obj/
+/bin/
+/_dist/
+/output/
+dist/
+.nuget/
+
+# Runtime-owned id maps
+ids.jsonc
+
+# ConfigSync-generated form schema, re-emitted next to each config.jsonc on every sync
+*.schema.jsonc
+
+# Internal findings and other crap. ship ONLY the README and any LICENSE/COPYING files
+*.md
+!README.md
+!readme.md
+!*LICENSE*.md
+!*license*.md
+!*COPYING*.md
+
+# JS is shipped as .txt and served at a .js URL (SPT ModValidator rejects .js/.ts)
+*.js
+**/*.ts-build-info
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs / runtime scratch
+*.log
+*.pid
+*.seed
+pids
+
+# Environment variables
+.env

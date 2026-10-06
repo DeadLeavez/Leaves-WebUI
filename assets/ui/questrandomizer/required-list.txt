@@ -1,0 +1,156 @@
+// Shared cross-player turn-in listing — the Info page's "Required items" tab and the debug page's
+// "All hand-ins" tab render the SAME per-player grouped list from this one module. Shipped as .txt
+// because SPT's mod validator rejects any .js file in a mod folder; served at
+// /questrandomizer/ui/required-list.js so pages can <script src> it.
+//
+// window.QrRequiredList(opts) wires one instance to a set of page elements + a data endpoint. Both
+// pages call it with their own element ids and their own /api URL; the aggregation and rendering are
+// identical. Data shape (either endpoint): [{ player, questName, itemNames, itemIds, fir, remaining }].
+(function () {
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const rxEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function hl(text, f) {
+    const e = esc(text || '');
+    if (!f) return e;
+    return e.replace(new RegExp(rxEsc(esc(f)), 'gi'), m => `<mark>${m}</mark>`);
+  }
+  const firBadge = fir => fir ? ' <span class="hbtag req">FiR</span>' : '';
+
+  // Fold the flat needs into a per-PLAYER list: one entry per player, each holding the items that
+  // player still owes. Within a player, single-item turn-ins are pooled per item (optionally splitting
+  // Found-in-Raid from regular, since those are different requirements); turn-ins that accept ANY of
+  // several items can't be pooled onto one item, so they're kept as their own "either/or" lines.
+  function aggregate(data, mergeFir) {
+    const byPlayer = new Map();   // player -> { single:Map, multi:[] }
+    for (const d of data) {
+      let p = byPlayer.get(d.player);
+      if (!p) { p = { single: new Map(), multi: [] }; byPlayer.set(d.player, p); }
+
+      const names = d.itemNames || [];
+      if (names.length === 1) {
+        const fir = !!d.fir;
+        const key = names[0].toLowerCase() + (mergeFir ? '' : '|' + (fir ? '1' : '0'));
+        let g = p.single.get(key);
+        if (!g) { g = { name: names[0], fir: mergeFir ? false : fir, anyFir: false, total: 0, rows: [] }; p.single.set(key, g); }
+        g.total += d.remaining;
+        if (fir) g.anyFir = true;
+        g.rows.push({ quest: d.questName, n: d.remaining, fir });
+      } else {
+        p.multi.push({ names, fir: !!d.fir, quest: d.questName, n: d.remaining });
+      }
+    }
+
+    // Materialize into a sorted list of players, each with its sorted item + either/or lists.
+    const players = [];
+    for (const [player, p] of byPlayer) {
+      const groups = [...p.single.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || (a.fir ? 1 : 0) - (b.fir ? 1 : 0));
+      for (const g of groups) g.rows.sort((a, b) => b.n - a.n || a.quest.localeCompare(b.quest));
+      const multi = p.multi.slice().sort((a, b) => a.names.join(', ').localeCompare(b.names.join(', ')));
+      players.push({ player, groups, multi });
+    }
+    players.sort((a, b) => a.player.localeCompare(b.player, undefined, { sensitivity: 'base' }));
+    return players;
+  }
+
+  function questRow(quest, n, fir, f, mergeFir) {
+    const firTag = (mergeFir && fir) ? ' <span class="hbtag req">FiR</span>' : '';
+    return `<li>${hl(quest, f)}<span class="tiqty">×${n}</span>${firTag}</li>`;
+  }
+
+  function itemLine(g, f, mergeFir) {
+    const nameHit = g.name.toLowerCase().includes(f);
+    const rows = g.rows.filter(r => !f || nameHit || r.quest.toLowerCase().includes(f));
+    if (!rows.length && !nameHit) return '';
+    const badge = mergeFir ? (g.anyFir ? ' <span class="hbtag req">some FiR</span>' : '') : firBadge(g.fir);
+    return `<li><b>${hl(g.name, f)}</b> <span class="hbcount">×${g.total}</span>${badge}`
+      + `<ul class="tibreak">${rows.map(r => questRow(r.quest, r.n, r.fir, f, mergeFir)).join('')}</ul></li>`;
+  }
+
+  function multiLine(m, f) {
+    const label = m.names.join(', ');
+    if (f && !label.toLowerCase().includes(f) && !m.quest.toLowerCase().includes(f)) return '';
+    return `<li><b>any of:</b> ${hl(label, f)} <span class="hbcount">×${m.n}</span>${firBadge(m.fir)}`
+      + `<ul class="tibreak"><li>${hl(m.quest, f)}</li></ul></li>`;
+  }
+
+  // One collapsible card per player. When a search is active, an item/quest match shows the card even
+  // if the player's own name doesn't match; a player-name match shows every item they need.
+  function playerCard(pl, f, mergeFir) {
+    const playerHit = !f || pl.player.toLowerCase().includes(f);
+    const itemHtml = pl.groups.map(g => itemLine(g, playerHit ? '' : f, mergeFir)).filter(Boolean).join('');
+    const multiHtml = pl.multi.map(m => multiLine(m, playerHit ? '' : f)).filter(Boolean).join('');
+    if (!itemHtml && !multiHtml) return '';
+
+    const distinct = pl.groups.length + pl.multi.length;
+    let body = '';
+    if (itemHtml) body += `<ul class="hbitems">${itemHtml}</ul>`;
+    if (multiHtml) body += `<div class="sub" style="margin:10px 0 4px;">Either/or turn-ins (accept any one of the listed items)</div><ul class="hbitems">${multiHtml}</ul>`;
+    return `<details class="hbcat" open><summary>${hl(pl.player, f)} <span class="hbcount">${distinct} item${distinct === 1 ? '' : 's'}</span></summary>`
+      + `<div style="padding:10px 14px;">${body}</div></details>`;
+  }
+
+  const plural = n => n === 1 ? '' : 's';
+
+  // opts:
+  //   dataUrl  : () => string          — the /api endpoint to fetch (a function so profile-scoped
+  //                                       callers can read the currently-selected profile each load)
+  //   content  : selector (required)   — where the player cards render
+  //   sub      : selector (optional)   — a one-line count summary
+  //   status   : selector (optional)   — a distinct-item count
+  //   search   : selector (optional)   — a text input this listing filters on
+  //   merge    : selector (optional)   — a checkbox toggling FiR / non-FiR merging
+  //   noun     : string (optional)     — what one row is called in the summaries (default "turn-in")
+  //   summary  : (stats) => string     — overrides the default sub text; stats = { count, players,
+  //                                       quests, items, noun }
+  window.QrRequiredList = function (opts) {
+    const q = s => (s ? document.querySelector(s) : null);
+    const contentEl = q(opts.content), subEl = q(opts.sub), statusEl = q(opts.status),
+          searchEl = q(opts.search), mergeEl = q(opts.merge);
+    const noun = opts.noun || 'turn-in';
+    let DATA = null, loaded = false;
+
+    function render() {
+      if (!DATA) return;
+      const f = searchEl ? searchEl.value.trim().toLowerCase() : '';
+      const mergeFir = mergeEl ? mergeEl.checked : false;
+      const players = aggregate(DATA, mergeFir);
+
+      const html = players.map(pl => playerCard(pl, f, mergeFir)).filter(Boolean).join('');
+      contentEl.innerHTML = html
+        ? `<div style="display:flex; flex-direction:column; gap:10px;">${html}</div>`
+        : `<div class="row muted">No ${noun}s.</div>`;
+
+      const stats = {
+        count: DATA.length,
+        players: new Set(DATA.map(d => d.player)).size,
+        quests: new Set(DATA.map(d => d.questName)).size,
+        items: new Set(DATA.flatMap(d => d.itemNames || [])).size,
+        noun
+      };
+      if (subEl) subEl.textContent = opts.summary
+        ? opts.summary(stats)
+        : `${stats.count} ${noun}${plural(stats.count)} across ${stats.players} player${plural(stats.players)}.`;
+      if (statusEl) statusEl.textContent = `${stats.items} distinct item${plural(stats.items)}`;
+    }
+
+    async function load(force) {
+      if (loaded && !force) { render(); return; }
+      try {
+        const r = await fetch(opts.dataUrl());
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        DATA = await r.json();
+        loaded = true;
+        render();
+      } catch (e) {
+        contentEl.innerHTML = `<div class="row warn">Failed to load ${noun}s: ${esc(e.message || e)}</div>`;
+      }
+    }
+
+    if (searchEl) searchEl.addEventListener('input', render);
+    // The merge toggle re-renders too; pages that also want to PERSIST the choice add their own
+    // change listener (multiple listeners are fine).
+    if (mergeEl) mergeEl.addEventListener('change', render);
+
+    return { load, render, reset() { loaded = false; } };
+  };
+})();

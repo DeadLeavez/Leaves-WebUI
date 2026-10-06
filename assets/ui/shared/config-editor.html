@@ -1,0 +1,1597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaves Config Editor</title>
+<link rel="stylesheet" href="/webui/base.css">
+<script defer src="/webui/rail.js"></script>
+<style>
+/* Palette tokens, body baseline and base link colour come from /webui/base.css (linked first).
+   Only config-editor-specific styling lives here. The page renders a schema-driven form from the
+   mod's Kind="config" GET ({ Schema, Current }); the raw-JSON textarea is kept as a collapsible
+   power-user fallback under <details>. */
+* { box-sizing: border-box; }
+body { padding: 0 22px 80px; }
+
+.topbar { display:flex; align-items:baseline; gap:14px; padding:16px 0 10px; border-bottom:1px solid var(--border-dim); flex-wrap:wrap; }
+.brand { font-family: var(--font-mono); font-size:18px; font-weight:700; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--gold-dim); }
+.brand .leaf { color:var(--accent); }
+.tagline { color:var(--muted); font-size:12.5px; }
+
+.controls { display:flex; gap:10px; align-items:center; margin:16px 0 4px; flex-wrap:wrap; }
+.controls .ctlspacer { flex:1 1 24px; min-width:12px; }
+label.inline { color:var(--muted); font-size:13px; }
+select, button, input[type=text], input[type=number] {
+  background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:8px;
+  padding:8px 11px; font-size:13.5px; font-family:var(--font-ui); }
+input[type=text], input[type=number] { font-family:var(--font-mono); }
+select:focus, input:focus { outline:none; border-color:var(--accent); }
+button { cursor:pointer; }
+button:hover:not(:disabled) { border-color:var(--border-hover); }
+button:disabled { opacity:.4; cursor:default; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#1b1d22; font-weight:600; }
+button.primary:hover:not(:disabled) { background:var(--accent-hover); border-color:var(--accent-hover); }
+button.ghost { background:none; }
+button.mini { padding:3px 8px; font-size:12px; }
+
+/* Collapsible [ConfigHeader] blurb */
+details.headerblurb { background:var(--panel); border:1px solid var(--border-dim); border-radius:8px; margin:14px 0; }
+details.headerblurb > summary { cursor:pointer; padding:10px 14px; font-size:13px; color:var(--gold-dim); user-select:none; }
+details.headerblurb[open] > summary { border-bottom:1px solid var(--border-dim); }
+details.headerblurb pre { margin:0; padding:12px 14px; white-space:pre-wrap; font-family:var(--font-mono);
+  font-size:12px; line-height:1.5; color:var(--text-2); max-height:260px; overflow:auto; }
+
+/* ---- Form tree ---- */
+#form { margin-top:12px; }
+fieldset.node { border:none; border-left:2px solid var(--border-dim); margin:10px 0 10px 2px;
+  padding:2px 0 2px 14px; min-width:0; border-radius:0 6px 6px 0; transition:border-color .12s; }
+/* Hover proximity: a hovered block only brightens its own left-bar — no area fill. A nested block
+   still sits inside all its hovered ancestors, so their bars light too, but each bar is at its own
+   indent so they read as a thin breadcrumb of the path rather than stacking into a wash. The single
+   area fill lives on `.field:hover`, the leaf row actually under the cursor. */
+fieldset.node:hover { border-left-color:var(--border-hover); }
+.field:hover { background:rgba(255,255,255,.012); border-radius:6px; }
+/* Focus: the block holding the field you're editing gets an accent left-bar (JS adds .focus to the
+   innermost fieldset.node with focus inside). After :hover so focus wins when both apply. */
+fieldset.node.focus { border-left-color:var(--accent); }
+/* Container [Comment]: printed verbatim (pre-wrap keeps the C# triple-quoted line breaks), with a
+   faint divider setting it off from the entries below. URLs + [label](url) become links (fillComment). */
+.node-hint { color:var(--muted); font-size:12px; line-height:1.45; margin:2px 0 12px;
+  padding-bottom:10px; border-bottom:1px solid var(--border-dim); white-space:pre-wrap; }
+.node-hint a { color:var(--link); }
+.node-hint a:hover { color:var(--link-hover); }
+.node-hint code { font-family:var(--font-mono); font-size:11.5px; background:var(--surface);
+  border:1px solid var(--border-dim); border-radius:4px; padding:1px 5px; color:var(--text);
+  white-space:pre-wrap; }
+
+/* Per-field [Comment]: no permanent hint line — the text rides the cursor as a floating bubble
+   (#floattip, positioned by JS) while the field row / list-dict entry value is hovered. */
+.field.hascmt .flabel, .rval .hascmt { cursor:help; }
+#floattip { position:fixed; z-index:60; max-width:min(440px, 80vw); padding:7px 10px;
+  border-radius:7px; background:var(--panel); border:1px solid var(--border);
+  box-shadow:0 6px 20px rgba(0,0,0,.45); color:var(--text-2); font-size:12px; line-height:1.45;
+  white-space:pre-wrap; pointer-events:none; opacity:0; transition:opacity .09s; }
+#floattip.on { opacity:1; }
+.empty { color:#5a5f68; font-size:12.5px; font-style:italic; }
+/* Shown in the form area until a config is chosen from the dropdown. */
+.pickprompt { text-align:center; color:var(--muted); font-size:21px; letter-spacing:.01em;
+  padding:90px 20px; margin-top:26px; border:1px dashed var(--border-dim); border-radius:14px; }
+.pickprompt .sub { display:block; margin-top:10px; font-size:13px; color:#5a5f68; letter-spacing:0; }
+
+/* container header: [disclosure] name  + inline summary when collapsed */
+.nodehead { display:flex; align-items:baseline; gap:8px; min-width:0; padding:2px 0 3px; }
+.nodehead.clickable { cursor:pointer; }
+.nodehead .disc { color:var(--muted); font-size:13px; line-height:1; flex:none; width:16px; text-align:center; transition:color .1s; }
+.nodehead.clickable:hover .disc { color:var(--gold-dim); }
+.nodehead .nodename { color:var(--gold-dim); font-size:13px; font-weight:600; letter-spacing:.02em; flex:none; }
+.nodehead .nodename.dim { color:var(--muted); font-weight:500; }
+.nodehead .csum { color:var(--text-2); font-family:var(--font-mono); font-size:12px; min-width:0;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.nodehead .count { color:var(--muted); font-size:11.5px; font-variant-numeric:tabular-nums; flex:none; }
+/* "fold/unfold every entry" button, on its own line just above the first list/dict entry */
+.foldentries { display:block; margin:2px 0 8px; }
+
+/* [Optional] container: the enable/disable toggle rides in the header, in place of an always-open sub-tree */
+.nodehead.opthead { align-items:center; gap:10px; }
+.nodehead.opthead .tval { font-size:11.5px; color:var(--muted); }
+
+/* [Percent] number field: edited as 0-100 with a % suffix, stored as a 0..1 fraction */
+.pctwrap { display:inline-flex; align-items:center; gap:6px; }
+.pctwrap input[type=number] { width:120px; }
+.pctwrap .pctsign { color:var(--muted); font-size:13px; }
+
+.field { display:grid; grid-template-columns:220px 1fr; gap:6px 16px; align-items:start;
+  padding:7px 0; border-bottom:1px solid var(--border-dim); }
+.field:last-child { border-bottom:none; }
+.field > .flabel { padding-top:7px; font-size:13px; color:var(--text-2); word-break:break-word; }
+.field > .flabel .req { color:var(--accent); margin-left:2px; }
+.field > .fbody { min-width:0; }
+.field .fhint { color:var(--muted); font-size:11.5px; line-height:1.4; margin:4px 0 0; }
+.field input[type=text], .field input[type=number], .field select { width:100%; max-width:520px; }
+.field input.badrange { border-color:var(--red); }
+input.badid, input.rkey.badid { border-color:var(--red); }
+.iderr { color:var(--red); }
+@media (max-width:720px) { .field { grid-template-columns:1fr; } .field > .flabel { padding-top:0; } }
+
+/* ---- mongoId: resolved name shown muted INSIDE the field, right-aligned (ghost suffix) ---- */
+.idline { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.idfield { position:relative; }
+.idline .idfield { flex:1; min-width:200px; max-width:420px; }
+.idfield .idinput, .idfield .rkey { width:100%; }
+.browse { flex:none; }
+.browse .xh { font-size:1.4em; line-height:0; vertical-align:-2px; margin-right:1px; }
+/* the resolved name floating inside the field, right-aligned, dim-gold, emerging from a left fade */
+.idname { position:absolute; top:1px; right:1px; bottom:1px; display:flex; align-items:center;
+  justify-content:flex-end; box-sizing:border-box; pointer-events:none; font-family:var(--font-ui);
+  font-size:11.5px; color:var(--gold-dim); max-width:66%; overflow:hidden; white-space:nowrap;
+  padding:0 11px 0 34px; border-radius:0 8px 8px 0;
+  background:linear-gradient(to right, transparent, var(--border) 66%); }
+.idname:empty { display:none; }   /* no fade when the value is blank / unresolved */
+.idname.unknown { color:var(--red); }
+
+/* dict key column: id input (same in-field name) + pick button(s), one wrapping row */
+.keywrap { width:230px; }
+.row.stack .keywrap { width:100%; }
+.keyrow { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+/* cap the key field so pick buttons + ghost name sit right after it, not flung to the row's far edge */
+.keyrow .keyfield { flex:0 1 420px; min-width:140px; }
+@media (max-width:820px) { .keywrap { width:100%; } }
+
+/* picker modal */
+.pickback { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center;
+  justify-content:center; z-index:50; padding:20px; }
+.pickwrap { background:var(--panel); border:1px solid var(--border); border-radius:12px;
+  width:min(560px,100%); max-height:82vh; display:flex; flex-direction:column; overflow:hidden;
+  box-shadow:0 12px 40px rgba(0,0,0,.5); }
+.pickhead { display:flex; align-items:center; gap:12px; padding:13px 16px; border-bottom:1px solid var(--border-dim); }
+.pickhead .ptitle { font-size:14px; font-weight:600; color:var(--gold-dim); flex:1; }
+.pickhead .pclose { background:none; border:none; color:var(--muted); font-size:22px; line-height:1;
+  cursor:pointer; padding:0 4px; }
+.pickhead .pclose:hover { color:var(--text); }
+.pickwarn { background:#2c2410; border-bottom:1px solid #5d4a1f; color:var(--gold); font-size:12px;
+  line-height:1.45; padding:9px 16px; }
+.picktabs { display:flex; gap:6px; padding:12px 16px 0; }
+.picktab { background:var(--surface); border:1px solid var(--border); border-bottom:none;
+  border-radius:8px 8px 0 0; padding:6px 15px; font-size:13px; cursor:pointer; color:var(--muted); }
+.picktab.active { background:var(--accent); border-color:var(--accent); color:#1b1d22; font-weight:600; }
+.picksearch { padding:11px 16px 9px; border-bottom:1px solid var(--border-dim); }
+.picksearch input { width:100%; }
+.pickresults { overflow:auto; padding:6px 8px 12px; }
+.presult { display:flex; align-items:baseline; gap:10px; padding:8px 10px; border-radius:7px; cursor:pointer; }
+.presult:hover { background:var(--surface); }
+.presult .pn { flex:1; font-size:13px; color:var(--text); min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.presult .psh { font-size:11.5px; color:var(--muted); flex:none; }
+.presult .pcount { font-size:11.5px; color:var(--muted); flex:none; font-variant-numeric:tabular-nums; }
+.presult .pid { font-family:var(--font-mono); font-size:11px; color:#5a5f68; flex:none; }
+
+/* toggle */
+.toggle { display:inline-flex; align-items:center; gap:9px; cursor:pointer; user-select:none; padding-top:3px; }
+.toggle input { position:absolute; opacity:0; width:0; height:0; }
+.toggle .track { width:38px; height:21px; border-radius:999px; background:var(--surface); border:1px solid var(--border);
+  position:relative; transition:background .12s, border-color .12s; flex:none; }
+.toggle .track::after { content:""; position:absolute; top:2px; left:2px; width:15px; height:15px; border-radius:50%;
+  background:var(--muted); transition:transform .12s, background .12s; }
+.toggle input:checked + .track { background:var(--accent); border-color:var(--accent); }
+.toggle input:checked + .track::after { transform:translateX(17px); background:#1b1d22; }
+.toggle .tval { font-size:12.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
+
+/* list / dict rows */
+.rows { display:flex; flex-direction:column; gap:8px; margin:4px 0 8px; }
+.row { display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; }
+.row .idx { color:#5a5f68; font-size:11.5px; font-family:var(--font-mono); padding-top:9px; min-width:26px; flex:none; text-align:right; }
+.row .rkey { flex:none; width:230px; }
+.row .rval { flex:1; min-width:180px; }
+/* A list of scalars: give the value a sensible fixed width (bare inputs otherwise render tiny, and a
+   flex:1 rval flung Remove to the far edge — looked missing). Remove then sits right after it. */
+.row.scalarrow .rval { flex:none; width:min(520px, 100%); }
+.row.scalarrow .rval > * { width:100%; }
+.row .rval fieldset.node { margin-top:0; }
+.row .rm { flex:none; background:none; border:1px solid var(--border-dim); color:#6b7280; border-radius:6px;
+  padding:5px 9px; font-size:13px; line-height:1; }
+.row .rm:hover { color:var(--red); border-color:var(--red); }
+/* When the value is a whole object/list/dict, a fixed key column beside a tall nested fieldset just
+   leaves dead space — stack key above value instead. Also the fallback for any narrow viewport. */
+.row.stack { flex-direction:column; align-items:stretch; }
+.row.stack .rkey { width:100%; }
+.row.stack .rm { align-self:flex-start; }
+@media (max-width:820px) {
+  .row .rkey { width:100%; }
+  .row .rval { flex-basis:100%; }
+}
+
+/* footer bar */
+.savebar { position:sticky; bottom:0; background:linear-gradient(to top, var(--bg) 70%, transparent);
+  padding:16px 0 12px; margin-top:20px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+.savebar[hidden] { display:none; }   /* the class sets display:flex, which would beat [hidden] alone */
+.dirtydot { color:var(--gold); font-size:12.5px; }
+.dirtydot::before { content:"\25CF "; }
+
+.msg { padding:10px 12px; border-radius:8px; font-size:13px; white-space:pre-wrap; margin-top:6px; }
+.msg.ok  { background:#1e2c1e; border:1px solid #2f5d2f; }
+.msg.err { background:#2c1e1e; border:1px solid #5d2f2f; }
+
+details.json { margin-top:22px; border:1px solid var(--border-dim); border-radius:8px; background:var(--panel); }
+details.json > summary { cursor:pointer; padding:10px 14px; font-size:13px; color:var(--gold-dim); user-select:none; }
+details.json[open] > summary { border-bottom:1px solid var(--border-dim); }
+details.json .jbody { padding:12px 14px; }
+details.json textarea { width:100%; min-height:320px; background:#20232a; color:var(--text); border:1px solid var(--border);
+  border-radius:8px; padding:12px; font-size:12.5px; font-family:var(--font-mono); }
+details.json .jrow { display:flex; gap:10px; align-items:center; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="brand"><span class="leaf">&#127811;</span> Config Editor</span>
+  <span class="tagline">schema-driven form &mdash; edits stay local until you Save</span>
+</div>
+
+<div class="controls">
+  <label class="inline" for="modpick">Mod</label>
+  <select id="modpick"></select>
+  <button id="reload" class="ghost">Reload</button>
+  <span class="ctlspacer"></span>
+  <button id="expandall" class="ghost mini" title="expand every collapsed section">Expand all</button>
+  <button id="collapseall" class="ghost mini" title="collapse every section">Collapse all</button>
+  <span id="viewonly" class="tagline"></span>
+</div>
+
+<details id="headerblurb" class="headerblurb" hidden open>
+  <summary>About this config</summary>
+  <pre id="headertext"></pre>
+</details>
+
+<div id="form"></div>
+
+<div class="savebar" id="savebar" hidden>
+  <button id="save" class="primary" disabled>Save</button>
+  <button id="revert" class="ghost" disabled>Revert changes</button>
+  <span id="dirty" class="dirtydot" hidden>unsaved changes</span>
+  <span id="savenote" class="tagline"></span>
+</div>
+<div id="result"></div>
+
+<details class="json" id="jsonpanel" hidden>
+  <summary>Edit as JSON (advanced)</summary>
+  <div class="jbody">
+    <p class="node-hint">The form above is the source of truth while this panel is closed. Opening it
+      snapshots the current form state; "Apply to form" pushes your JSON edits back into the form.</p>
+    <textarea id="jsonarea" spellcheck="false"></textarea>
+    <div class="jrow">
+      <button id="jsonapply" class="mini">Apply to form</button>
+      <button id="jsonreset" class="mini ghost">Reset to form state</button>
+      <span id="jsonnote" class="tagline"></span>
+    </div>
+  </div>
+</details>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const $ = id => document.getElementById(id);
+const pick = $('modpick'), formEl = $('form'), saveBtn = $('save'), revertBtn = $('revert');
+const dirtyEl = $('dirty'), saveNote = $('savenote'), resultEl = $('result'), saveBar = $('savebar');
+const blurbEl = $('headerblurb'), headerTextEl = $('headertext'), viewOnlyEl = $('viewonly');
+const jsonPanel = $('jsonpanel'), jsonArea = $('jsonarea'), jsonNote = $('jsonnote');
+
+let entries = [];
+let selected = null;
+let schema = null;        // root ConfigSchemaNode
+let model = null;         // live edit copy of Current
+let original = '{}';      // JSON string of Current as loaded, for dirty check
+let readonly = false;
+
+// Which container paths the user has collapsed. Rendering reads this; the model is never touched by
+// a collapse, so an edit made in a since-collapsed section is still there when it reopens.
+const collapsed = new Set();
+// Every collapsible container path the last render walked — feeds the Collapse-all button (a path
+// inside an already-collapsed ancestor won't be here, but it's hidden anyway so that's fine).
+let collapsiblePaths = new Set();
+
+// ---------- small helpers ----------
+const clone = x => JSON.parse(JSON.stringify(x));
+const pretty = x => JSON.stringify(x, null, 2);
+const isDirty = () => JSON.stringify(model) !== original;
+
+// EFT rich-text ("RTT") tags in item names — <color=#…>[T1]</color> tier markers etc. Shared impl
+// lives in rail.js (window.LeavesRTT); fall back to a passthrough if the rail hasn't loaded.
+const rttHtml = s => (window.LeavesRTT ? window.LeavesRTT.toHtml(s) : String(s == null ? '' : s));
+const rttStrip = s => (window.LeavesRTT ? window.LeavesRTT.strip(s) : String(s == null ? '' : s));
+
+const MONGOID_RE = /^[0-9a-fA-F]{24}$/;
+const SCALAR_KINDS = ['bool', 'int', 'number', 'string', 'enum', 'mongoId'];
+const isScalarKind = k => SCALAR_KINDS.includes(k);
+const isContainerKind = k => k === 'object' || k === 'list' || k === 'dict';
+
+function prettifyName(name) {
+  if (!name || name === '<entry>' || name === '<item>') return name;
+  let s = name.replace(/[_-]+/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function kindTag(node) {
+  return node.Kind === 'list' ? '  [list]' : node.Kind === 'dict' ? '  [map]' : '';
+}
+
+// A [Choices] value's display label. Equal to the value itself unless the schema carried
+// ChoiceLabels (the [Choices(enum, useEnumValues:true)] form — value is the enum integer, label is
+// the name). Used for every <select> option text and for collapsed-summary key lists.
+function choiceLabel(node, value) {
+  if (!node.ChoiceLabels || !node.Choices) return String(value);
+  const i = node.Choices.indexOf(String(value));
+  return (i >= 0 && i < node.ChoiceLabels.length) ? node.ChoiceLabels[i] : String(value);
+}
+
+// A container is worth a collapse toggle if it actually holds something to hide.
+function isCollapsible(node) {
+  return node.Kind === 'list' || node.Kind === 'dict' || (node.Kind === 'object' && node.Children.length > 0);
+}
+
+function fmtScalar(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  return String(v);
+}
+
+// A mongoId's resolved name for a collapsed summary, falling back to the raw id when unresolved.
+function idName(v) {
+  const n = resolveName(v);
+  return n || fmtScalar(v);
+}
+// Whether a dict's keys are ids (declared via [AllowedIds], or just id-shaped in practice).
+function dictIsIdKeyed(node, value) {
+  if (node.AllowedIds && node.AllowedIds.length) return true;
+  for (const k of Object.keys(value)) { if (MONGOID_RE.test(k)) return true; }
+  return false;
+}
+
+// One-line, read-only summary shown when a container is collapsed. CSS ellipsis trims the overflow.
+// mongoId values/keys are shown by their resolved name (much more useful than a raw 24-hex id).
+function summarize(node, value) {
+  if (value == null) return '(unset)';
+  if (node.Kind === 'list') {
+    if (!value.length) return '(empty)';
+    if (isScalarKind(node.Children[0].Kind)) {
+      const isId = node.Children[0].Kind === 'mongoId';
+      const parts = [];
+      for (const v of value) parts.push(isId ? idName(v) : fmtScalar(v));
+      return parts.join(', ');
+    }
+    return value.length + (value.length === 1 ? ' entry' : ' entries');
+  }
+  if (node.Kind === 'dict') {
+    const keys = Object.keys(value);
+    if (!keys.length) return '(no entries)';
+    const idKeyed = dictIsIdKeyed(node, value);
+    if (isScalarKind(node.Children[0].Kind)) {
+      const isIdVal = node.Children[0].Kind === 'mongoId';
+      const parts = [];
+      for (const k of keys) {
+        parts.push((idKeyed ? idName(k) : k) + ': ' + (isIdVal ? idName(value[k]) : fmtScalar(value[k])));
+      }
+      return parts.join(', ');
+    }
+    // Container values: for an id-keyed or choice-keyed map the keys themselves are the useful summary.
+    if (idKeyed) {
+      const parts = [];
+      for (const k of keys) parts.push(idName(k));
+      return parts.join(', ');
+    }
+    if (node.Choices && node.Choices.length) {
+      const parts = [];
+      for (const k of keys) parts.push(choiceLabel(node, k));
+      return parts.join(', ');
+    }
+    return keys.length + (keys.length === 1 ? ' entry' : ' entries');
+  }
+  // object
+  const parts = [];
+  for (const c of node.Children) {
+    const v = value[c.Name];
+    if (v === undefined) continue;
+    if (isScalarKind(c.Kind)) parts.push(c.Name + '=' + (c.Kind === 'mongoId' ? idName(v) : fmtScalar(v)));
+    else if (c.Kind === 'list') parts.push(c.Name + '[' + (Array.isArray(v) ? v.length : 0) + ']');
+    else if (c.Kind === 'dict') parts.push(c.Name + '{' + Object.keys(v || {}).length + '}');
+    else parts.push(c.Name + '={…}');
+  }
+  return parts.length ? parts.join(', ') : '(empty)';
+}
+
+// Re-render the whole form (cheap; configs are tiny) without losing scroll position.
+function reRender() {
+  const y = window.scrollY;
+  hideTip();
+  renderForm();
+  window.scrollTo(0, y);
+}
+
+function toggleCollapsed(path) {
+  if (collapsed.has(path)) collapsed.delete(path); else collapsed.add(path);
+  reRender();
+}
+
+function defaultFor(node) {
+  // SchemaDefault is the property's [DefaultValue] (leaf nodes only) - a C# initializer like
+  // `= 300` never reaches us, so this is how a freshly-added entry gets a non-zero seed.
+  if (node.SchemaDefault !== undefined && node.SchemaDefault !== null) return node.SchemaDefault;
+  switch (node.Kind) {
+    case 'object': {
+      const o = {};
+      for (const c of node.Children) o[c.Name] = defaultFor(c);
+      return o;
+    }
+    case 'dict': return {};
+    case 'list': return [];
+    case 'bool': return false;
+    case 'int':
+    case 'number': return node.Min != null ? node.Min : 0;
+    case 'enum': return (node.EnumValues && node.EnumValues[0]) || '';
+    case 'mongoId': return '';
+    default: return '';
+  }
+}
+
+// ---------- [FetchSource] / [SourceField]: fill an entry from a fetched document ----------
+// getByPath(doc, "item._props.MedUseTime") walks dotted segments; undefined if any is missing.
+function getByPath(obj, path) {
+  let cur = obj;
+  for (const seg of path.split('.')) {
+    if (cur == null) return undefined;
+    cur = cur[seg];
+  }
+  return cur;
+}
+// Walk `node`'s subtree; for every leaf/holder carrying [SourceField], copy that path out of `doc`
+// into `target` (an entry value object). A node WITH [SourceField] is assigned wholesale and not
+// descended into (covers the effects dict). Returns how many fields were filled.
+function fillFromSource(node, target, doc) {
+  let filled = 0;
+  for (const child of node.Children || []) {
+    if (child.SourceField) {
+      const v = getByPath(doc, child.SourceField);
+      if (v !== undefined) { target[child.Name] = clone(v); filled++; }
+      continue;
+    }
+    // Recurse into plain object children, but only touch `target` if something under them was
+    // actually filled — otherwise Fetch would spawn empty {} blocks for untagged sub-objects.
+    if (child.Kind === 'object' && child.Children && child.Children.length) {
+      const sub = (target[child.Name] && typeof target[child.Name] === 'object') ? target[child.Name] : {};
+      const n = fillFromSource(child, sub, doc);
+      if (n > 0) { target[child.Name] = sub; filled += n; }
+    }
+  }
+  return filled;
+}
+
+// ---------- id name resolution + picker ----------
+// Names come from /webui/db/localeNames ({ id: displayName } for items + trader nicknames + any
+// named category node) — one fetch, reused for every mongoId field. Traders load lazily the first
+// time a picker needs them.
+let namesById = {};
+let nodeItemCount = {};   // category node id -> real items anywhere in its subtree (from /webui/db/nodes)
+let namesLoaded = false;
+let tradersCache = null;
+
+async function loadNames() {
+  if (namesLoaded) return;
+  try {
+    // localeNames covers items + trader nicknames + any node with a locale " Name". Category nodes
+    // WITHOUT a locale name (e.g. the root "Item" node) aren't in it, so merge the node tree too —
+    // its names fall back to template.Name, filling those gaps.
+    const locale = await (await fetch('/webui/db/localeNames')).json();
+    namesById = locale || {};
+    try {
+      const nodes = await (await fetch('/webui/db/nodes')).json();
+      mergeNodeNames(nodes);
+    } catch (e) { /* node tree optional; locale names still work */ }
+    namesLoaded = true;
+  } catch (e) { namesById = {}; }
+}
+// Walk the /webui/db/nodes tree, filling any id the locale table didn't already name and recording
+// each category node's subtree item count (totalItems = real items anywhere below it, nodes excluded).
+function mergeNodeNames(node) {
+  if (!node) return;
+  if (node.id && node.name && !namesById[node.id]) namesById[node.id] = node.name;
+  if (node.id && typeof node.totalItems === 'number') nodeItemCount[node.id] = node.totalItems;
+  if (node.children) { for (const c of node.children) mergeNodeNames(c); }
+}
+function resolveName(id) {
+  const n = namesById[(id || '').trim()];
+  return n ? rttStrip(n) : null;
+}
+async function getTraders() {
+  if (tradersCache) return tradersCache;
+  try { tradersCache = await (await fetch('/webui/db/traders')).json(); }
+  catch (e) { tradersCache = []; }
+  return tradersCache;
+}
+
+// Wrap an id <input> so the resolved name can float muted INSIDE it, right-aligned (a ghost suffix).
+// Returns the positioned wrapper to place in the row, plus the overlay span to paint via paintIdName.
+function makeIdField(input, extraClass) {
+  const field = document.createElement('div');
+  field.className = 'idfield' + (extraClass ? ' ' + extraClass : '');
+  const name = document.createElement('span');
+  name.className = 'idname';
+  field.appendChild(input);
+  field.appendChild(name);
+  return { field: field, name: name };
+}
+// Paint the in-field name: the resolved name (muted), a red "unknown id" when the value is id-shaped
+// but resolves to nothing, or blank otherwise so the shape check speaks instead. The full name goes
+// in the title so a truncated long name is still readable on hover.
+function paintIdName(el, id) {
+  const v = (id || '').trim();
+  if (!v) { el.textContent = ''; el.className = 'idname'; el.title = ''; return; }
+  const name = resolveName(v);
+  if (name) { el.textContent = name; el.className = 'idname'; el.title = name; }
+  else if (MONGOID_RE.test(v)) { el.textContent = 'unknown id'; el.className = 'idname unknown';
+    el.title = 'no item, trader or category has this id'; }
+  else { el.textContent = ''; el.className = 'idname'; el.title = ''; }
+}
+
+const KIND_ORDER = ['Item', 'Node', 'Trader'];
+const KIND_LABEL = { Item: 'Item', Node: 'Category', Trader: 'Trader' };
+const PICK_LABEL = { Item: 'Pick Item', Node: 'Pick Category', Trader: 'Pick Trader' };
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// A pick button: an oversized crosshair glyph (its own span so it can be bigger than the label) + text.
+function pickButton(label, onClick) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'mini browse';
+  const xh = document.createElement('span');
+  xh.className = 'xh'; xh.textContent = '⌖';
+  b.appendChild(xh);
+  b.appendChild(document.createTextNode(' ' + label));
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+// Append the pick button(s) for a mongoId field to `container`. One button per allowed kind
+// ("Pick Item" / "Pick Category" / "Pick Trader"), each opening the picker with that tab active
+// (the modal still shows every allowed tab). An unannotated field gets one "ID Picker" opening all
+// three tabs with the undefined-type warning.
+function appendPickButtons(container, allowedIds, onPick) {
+  const kinds = (allowedIds && allowedIds.length) ? KIND_ORDER.filter(k => allowedIds.includes(k)) : null;
+  if (kinds && kinds.length) {
+    for (const k of kinds) {
+      container.appendChild(pickButton(PICK_LABEL[k], () => openPicker(allowedIds, onPick, k)));
+    }
+  } else {
+    container.appendChild(pickButton('ID Picker', () => openPicker(null, onPick, null)));
+  }
+}
+
+// Modal id picker. Tabs follow the field's [AllowedIds]; an unannotated field gets all three tabs
+// and a warning banner. Item/Group search hits /webui/db/query (type=Item|Node); Trader is the
+// cached trader list filtered client-side. Picking a row calls onPick(id) and closes.
+function openPicker(allowedIds, onPick, initialKind) {
+  const undefinedField = !(allowedIds && allowedIds.length);
+  let kinds = KIND_ORDER.filter(k => undefinedField || allowedIds.includes(k));
+  if (!kinds.length) kinds = KIND_ORDER.slice();
+
+  const back = document.createElement('div');
+  back.className = 'pickback';
+  const wrap = document.createElement('div');
+  wrap.className = 'pickwrap';
+  back.appendChild(wrap);
+
+  const shut = () => { document.removeEventListener('keydown', onKey); back.remove(); };
+
+  const head = document.createElement('div');
+  head.className = 'pickhead';
+  const title = document.createElement('span');
+  title.className = 'ptitle'; title.textContent = 'Pick an id';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'pclose'; closeBtn.type = 'button'; closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', shut);
+  head.appendChild(title); head.appendChild(closeBtn);
+  wrap.appendChild(head);
+
+  if (undefinedField) {
+    const warn = document.createElement('div');
+    warn.className = 'pickwarn';
+    warn.textContent = '⚠ This field has no [AllowedIds] annotation — its id type is undefined, '
+      + 'so every kind is offered. Pick carefully.';
+    wrap.appendChild(warn);
+  }
+
+  let active = (initialKind && kinds.includes(initialKind)) ? initialKind : kinds[0];
+  const tabsEl = document.createElement('div');
+  tabsEl.className = 'picktabs';
+  const tabButtons = {};
+  for (const k of kinds) {
+    const t = document.createElement('button');
+    t.type = 'button'; t.className = 'picktab' + (k === active ? ' active' : '');
+    t.textContent = KIND_LABEL[k];
+    t.addEventListener('click', () => {
+      active = k;
+      for (const kk of kinds) tabButtons[kk].classList.toggle('active', kk === active);
+      doSearch();
+    });
+    tabButtons[k] = t;
+    tabsEl.appendChild(t);
+  }
+  if (kinds.length > 1) wrap.appendChild(tabsEl);
+
+  const searchWrap = document.createElement('div');
+  searchWrap.className = 'picksearch';
+  const searchEl = document.createElement('input');
+  searchEl.type = 'text'; searchEl.placeholder = 'search by name…'; searchEl.spellcheck = false;
+  searchWrap.appendChild(searchEl);
+  wrap.appendChild(searchWrap);
+
+  const resultsEl = document.createElement('div');
+  resultsEl.className = 'pickresults';
+  wrap.appendChild(resultsEl);
+
+  let seq = 0;
+  async function doSearch() {
+    const mySeq = ++seq;
+    const term = searchEl.value;
+    resultsEl.innerHTML = '<div class="empty">searching…</div>';
+    let rows = [];
+    try {
+      if (active === 'Trader') {
+        const all = await getTraders();
+        const t = term.trim().toLowerCase();
+        rows = [];
+        for (const x of all) {
+          if (!t || x.nickname.toLowerCase().includes(t) || x.id.includes(t)) {
+            rows.push({ id: x.id, name: x.nickname, short: '' });
+          }
+        }
+      } else {
+        const type = active === 'Node' ? 'Node' : 'Item';
+        const q = new URLSearchParams({ type: type, limit: '150' });
+        if (term.trim()) q.set('name', escRe(term.trim()));
+        rows = await (await fetch('/webui/db/query?' + q.toString())).json();
+      }
+    } catch (e) {
+      if (mySeq === seq) resultsEl.innerHTML = '<div class="msg err">lookup failed: ' + e.message + '</div>';
+      return;
+    }
+    if (mySeq !== seq) return;   // a newer keystroke already superseded this search
+    // Categories read better alphabetically than in item-DB (≈ id) order.
+    if (active === 'Node') {
+      rows.sort((a, b) => rttStrip(a.name || '').localeCompare(rttStrip(b.name || '')));
+    }
+    paintResults(rows);
+  }
+
+  function paintResults(rows) {
+    resultsEl.innerHTML = '';
+    if (!rows.length) {
+      const e = document.createElement('div');
+      e.className = 'empty'; e.textContent = '(no matches)';
+      resultsEl.appendChild(e);
+      return;
+    }
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.className = 'presult';
+      const n = document.createElement('span');
+      n.className = 'pn'; n.innerHTML = rttHtml(r.name || r.id);
+      row.appendChild(n);
+      // Short name is useful for items (M4A1, M855…) but on category nodes it's mostly a noisy
+      // "Item"/parent echo, so drop the column on the Category tab.
+      if (r.short && active !== 'Node') {
+        const s = document.createElement('span');
+        s.className = 'psh'; s.textContent = rttStrip(r.short);
+        row.appendChild(s);
+      }
+      // Category rows: how many real items live anywhere under this node (from the nodes tree).
+      if (active === 'Node') {
+        const c = nodeItemCount[r.id];
+        if (typeof c === 'number') {
+          const cnt = document.createElement('span');
+          cnt.className = 'pcount';
+          cnt.textContent = c === 1 ? '1 item' : c.toLocaleString() + ' items';
+          cnt.title = 'items anywhere in this category';
+          row.appendChild(cnt);
+        }
+      }
+      const idEl = document.createElement('span');
+      idEl.className = 'pid'; idEl.textContent = r.id;
+      row.appendChild(idEl);
+      row.addEventListener('click', () => { onPick(r.id); shut(); });
+      resultsEl.appendChild(row);
+    }
+  }
+
+  let debounce = null;
+  searchEl.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(doSearch, 160);
+  });
+  back.addEventListener('click', e => { if (e.target === back) shut(); });
+  function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); shut(); } }
+  document.addEventListener('keydown', onKey);
+
+  document.body.appendChild(back);
+  searchEl.focus();
+  doSearch();
+}
+
+function showMsg(cls, text) {
+  resultEl.innerHTML = '';
+  if (!text) return;
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  resultEl.appendChild(d);
+}
+
+// ---------- dirty / sync plumbing ----------
+function markDirty() {
+  const d = !readonly && isDirty();
+  dirtyEl.hidden = !d;
+  saveBtn.disabled = readonly || !selected.save || !d;
+  revertBtn.disabled = !d;
+  if (jsonPanel.open) jsonArea.value = pretty(model);
+}
+
+// ---------- form rendering ----------
+function renderForm() {
+  formEl.innerHTML = '';
+  collapsiblePaths = new Set();
+  const hasSchema = !!schema;
+  $('expandall').disabled = $('collapseall').disabled = !hasSchema;
+  if (!hasSchema) return;
+  formEl.appendChild(renderChildren(schema, () => model, ''));
+}
+
+// Renders the property list of an object node into a bare container (no fieldset wrapper).
+function renderChildren(node, getObj, path) {
+  const wrap = document.createElement('div');
+  if (!node.Children.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = '(this config has no fields)';
+    wrap.appendChild(e);
+    return wrap;
+  }
+  for (const child of node.Children) {
+    const obj = getObj();
+    // Seed a value only for containers (nested rendering needs something to walk) and for required
+    // scalars. An absent OPTIONAL scalar is left absent — injecting a default here would silently
+    // add a key that wasn't in the file and mark the form dirty on load.
+    if (obj[child.Name] === undefined && (isContainerKind(child.Kind) || child.Required) && !child.Optional) {
+      obj[child.Name] = defaultFor(child);
+    }
+    wrap.appendChild(renderField(
+      child,
+      () => getObj()[child.Name],
+      v => { getObj()[child.Name] = v; },
+      path + '/' + child.Name));
+  }
+  return wrap;
+}
+
+// Fill `el` with comment text, marking up three inline forms; everything else is literal (newlines
+// kept by the element's white-space:pre-wrap). Used for container [Comment] blurbs.
+//   [label](https://…)  -> link with custom text      (tried first so it wins over the bare form)
+//   `code` or ``code``   -> inline <code> chip
+//   https://…            -> link (its own text)
+//   groups: 1=link label  2=link href  3=backtick run  4=code text  5=bare url
+const COMMENT_MD_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(`{1,2})([^`]+?)\3|(https?:\/\/[^\s<>()]+)/g;
+function fillComment(el, text) {
+  el.textContent = '';
+  let last = 0, m;
+  COMMENT_MD_RE.lastIndex = 0;
+  while ((m = COMMENT_MD_RE.exec(text)) !== null) {
+    if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+    if (m[4] !== undefined) {
+      const c = document.createElement('code');
+      c.textContent = m[4];
+      el.appendChild(c);
+    } else {
+      const a = document.createElement('a');
+      a.href = m[2] || m[5];
+      a.textContent = m[1] || m[5];
+      a.target = '_blank'; a.rel = 'noopener noreferrer';
+      el.appendChild(a);
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+}
+
+// Per-field [Comment] shows as a cursor-following bubble while the row is hovered. The caller marks
+// the hover target (.field row, or a list/dict entry's value holder) with .hascmt + data-cmt; a
+// single #floattip element (wired in initFloatTip) does the rest.
+let floatTipEl = null, floatTipTarget = null;
+function hideTip() {
+  floatTipTarget = null;
+  if (floatTipEl) floatTipEl.classList.remove('on');
+}
+function placeTip(x, y) {
+  const pad = 15;
+  const r = floatTipEl.getBoundingClientRect();
+  let left = x + pad, top = y + pad;
+  if (left + r.width + 8 > window.innerWidth) left = x - pad - r.width;
+  if (top + r.height + 8 > window.innerHeight) top = y - pad - r.height;
+  floatTipEl.style.left = Math.max(6, left) + 'px';
+  floatTipEl.style.top = Math.max(6, top) + 'px';
+}
+function initFloatTip() {
+  floatTipEl = document.createElement('div');
+  floatTipEl.id = 'floattip';
+  document.body.appendChild(floatTipEl);
+  formEl.addEventListener('mouseover', e => {
+    const t = e.target.closest ? e.target.closest('.hascmt') : null;
+    if (!t || !t.dataset.cmt) return;
+    floatTipTarget = t;
+    floatTipEl.textContent = t.dataset.cmt;
+    floatTipEl.classList.add('on');
+    placeTip(e.clientX, e.clientY);
+  });
+  formEl.addEventListener('mousemove', e => {
+    if (!floatTipTarget) return;
+    if (!floatTipTarget.contains(e.target)) { hideTip(); return; }
+    placeTip(e.clientX, e.clientY);
+  });
+  formEl.addEventListener('mouseout', e => {
+    if (floatTipTarget && !floatTipTarget.contains(e.relatedTarget)) hideTip();
+  });
+  window.addEventListener('scroll', hideTip, true);
+}
+
+// One labelled field. Container kinds (object/list/dict) render a fieldset in the body; scalars
+// render an input.
+function renderField(node, get, set, path) {
+  const isContainer = isContainerKind(node.Kind);
+
+  const field = document.createElement('div');
+  field.className = 'field';
+  if (isContainer) field.style.gridTemplateColumns = '1fr';
+
+  const lab = document.createElement('div');
+  lab.className = 'flabel';
+  lab.textContent = prettifyName(node.Name);
+  if (node.Required) {
+    const r = document.createElement('span');
+    r.className = 'req'; r.textContent = '*'; r.title = 'required';
+    lab.appendChild(r);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'fbody';
+
+  if (isContainer) {
+    lab.style.display = 'none';
+    if (node.Optional) {
+      body.appendChild(renderOptionalContainer(node, get, set, path));
+    } else {
+      body.appendChild(renderContainer(node, get, set, { path }));
+    }
+  } else {
+    body.appendChild(renderScalar(node, get, set, node.AllowedIds));
+  }
+
+  field.appendChild(lab);
+  field.appendChild(body);
+  if (!isContainer && node.Comment) {
+    field.classList.add('hascmt');
+    field.dataset.cmt = node.Comment;
+  }
+  return field;
+}
+
+function renderContainer(node, get, set, opts) {
+  const bare = opts && opts.bare;      // list item / dict entry: the row already identifies it
+  const path = (opts && opts.path) || '';
+  const collapsible = isCollapsible(node);
+  if (collapsible && path) collapsiblePaths.add(path);
+  const isColl = collapsible && collapsed.has(path);
+
+  const fs = document.createElement('fieldset');
+  fs.className = 'node';
+
+  // header row — disclosure triangle + name (+ inline summary while collapsed)
+  const head = document.createElement('div');
+  head.className = 'nodehead';
+  if (collapsible) {
+    head.classList.add('clickable');
+    head.setAttribute('role', 'button');
+    head.tabIndex = 0;
+    const disc = document.createElement('span');
+    disc.className = 'disc';
+    disc.textContent = isColl ? '▶' : '▼';   // collapsed / expanded
+    head.appendChild(disc);
+    head.addEventListener('click', () => toggleCollapsed(path));
+    head.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapsed(path); }
+    });
+  }
+
+  const name = document.createElement('span');
+  if (!bare) {
+    name.className = 'nodename';
+    name.textContent = prettifyName(node.Name) + kindTag(node) + (node.Required ? ' *' : '');
+  } else {
+    name.className = 'nodename dim';
+    name.textContent = node.Kind === 'object' ? 'entry' : node.Kind === 'list' ? 'list' : 'map';
+  }
+  head.appendChild(name);
+
+  if (isColl) {
+    const sum = document.createElement('span');
+    sum.className = 'csum';
+    const txt = summarize(node, get());
+    sum.textContent = txt;
+    sum.title = txt;
+    head.appendChild(sum);
+  }
+
+  fs.appendChild(head);
+
+  if (isColl) {
+    return fs;   // collapsed: header + summary only, nothing rendered below
+  }
+
+  appendContainerBody(fs, node, get, path);
+  return fs;
+}
+
+// The [Comment] blurb + child list of an expanded container. Shared by renderContainer and
+// renderOptionalContainer.
+function appendContainerBody(fs, node, get, path) {
+  if (node.Comment) {
+    const h = document.createElement('p');
+    h.className = 'node-hint';
+    fillComment(h, node.Comment);
+    fs.appendChild(h);
+  }
+  if (node.Kind === 'object') fs.appendChild(renderChildren(node, get, path));
+  else if (node.Kind === 'list') fs.appendChild(renderList(node, get, path));
+  else fs.appendChild(renderDict(node, get, path));
+}
+
+// An [Optional] container: a header carrying an enable/disable toggle instead of an always-open
+// sub-tree. Off => the value is dropped from the model (absent from the saved config). On => seeded
+// with a pruned default and rendered like any other container, collapse included.
+function renderOptionalContainer(node, get, set, path) {
+  const present = get() != null;
+  const collapsible = present && isCollapsible(node);
+  if (collapsible && path) collapsiblePaths.add(path);
+  const isColl = collapsible && collapsed.has(path);
+
+  const fs = document.createElement('fieldset');
+  fs.className = 'node';
+
+  const head = document.createElement('div');
+  head.className = 'nodehead opthead';
+
+  const tgl = document.createElement('label');
+  tgl.className = 'toggle';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = present; cb.disabled = readonly;
+  const track = document.createElement('span'); track.className = 'track';
+  cb.addEventListener('change', () => {
+    set(cb.checked ? seedOptional(node) : undefined);
+    reRender(); markDirty();
+  });
+  tgl.appendChild(cb); tgl.appendChild(track);
+  head.appendChild(tgl);
+
+  if (collapsible) {
+    const disc = document.createElement('span');
+    disc.className = 'disc'; disc.textContent = isColl ? '▶' : '▼';
+    disc.setAttribute('role', 'button'); disc.tabIndex = 0;
+    disc.style.cursor = 'pointer';
+    disc.addEventListener('click', () => toggleCollapsed(path));
+    disc.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapsed(path); }
+    });
+    head.appendChild(disc);
+  }
+
+  const name = document.createElement('span');
+  name.className = 'nodename' + (present ? '' : ' dim');
+  name.textContent = prettifyName(node.Name) + kindTag(node);
+  head.appendChild(name);
+
+  const state = document.createElement('span');
+  state.className = 'tval';
+  state.textContent = present ? '' : 'disabled — not written to config';
+  head.appendChild(state);
+
+  if (present && isColl) {
+    const sum = document.createElement('span');
+    sum.className = 'csum';
+    const txt = summarize(node, get());
+    sum.textContent = txt; sum.title = txt;
+    head.appendChild(sum);
+  }
+
+  fs.appendChild(head);
+  if (present && !isColl) appendContainerBody(fs, node, get, path);
+  return fs;
+}
+
+// defaultFor, minus an object's non-required scalar fields, so enabling an optional block doesn't
+// bake in zeros/blanks for things meant to stay absent (kept: required scalars, nested containers).
+function seedOptional(node) {
+  const v = defaultFor(node);
+  if (node.Kind === 'object' && v && typeof v === 'object') {
+    for (const c of node.Children) {
+      if (!c.Required && isScalarKind(c.Kind)) delete v[c.Name];
+    }
+  }
+  return v;
+}
+
+// A "fold/unfold every entry" button, shown above the rows of a list/dict whose entries are
+// themselves collapsible containers. Left-aligned, on its own line just above the first entry.
+function entryFoldButton(entryPaths) {
+  let allColl = true;
+  for (const p of entryPaths) { if (!collapsed.has(p)) { allColl = false; break; } }
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'mini ghost foldentries';
+  b.textContent = allColl ? 'Expand all entries' : 'Collapse all entries';
+  b.addEventListener('click', () => {
+    for (const p of entryPaths) { if (allColl) collapsed.delete(p); else collapsed.add(p); }
+    reRender();
+  });
+  return b;
+}
+
+function renderList(node, get, path) {
+  const tpl = node.Children[0];
+  const arr = get();
+  const box = document.createElement('div');
+
+  const scalarRow = !isContainerKind(tpl.Kind);
+  if (!scalarRow && arr.length > 1) {
+    const paths = [];
+    for (let i = 0; i < arr.length; i++) paths.push(path + '/#' + i);
+    box.appendChild(entryFoldButton(paths));
+  }
+
+  const rows = document.createElement('div');
+  rows.className = 'rows';
+  arr.forEach((_, i) => {
+    const row = document.createElement('div');
+    row.className = scalarRow ? 'row scalarrow' : 'row';
+
+    const idx = document.createElement('span');
+    idx.className = 'idx'; idx.textContent = '#' + (i + 1);
+    row.appendChild(idx);
+
+    const val = document.createElement('div');
+    val.className = 'rval';
+    val.appendChild(renderValueByKind(tpl, () => get()[i], v => { get()[i] = v; }, path + '/#' + i, node.AllowedIds));
+    row.appendChild(val);
+
+    if (!readonly) {
+      const rm = document.createElement('button');
+      rm.className = 'rm'; rm.type = 'button'; rm.textContent = 'Remove'; rm.title = 'remove entry';
+      rm.addEventListener('click', () => { get().splice(i, 1); reRender(); markDirty(); });
+      row.appendChild(rm);
+    }
+    rows.appendChild(row);
+  });
+  box.appendChild(rows);
+
+  if (!arr.length) {
+    const e = document.createElement('div');
+    e.className = 'empty'; e.textContent = '(empty list)';
+    box.appendChild(e);
+  }
+  if (!readonly) {
+    const add = document.createElement('button');
+    add.className = 'mini'; add.type = 'button'; add.textContent = '+ Add entry';
+    add.addEventListener('click', () => { get().push(defaultFor(tpl)); reRender(); markDirty(); });
+    box.appendChild(add);
+  }
+  return box;
+}
+
+function renderDict(node, get, path) {
+  const tpl = node.Children[0];
+  const obj = get();
+  const box = document.createElement('div');
+
+  // If this map is keyed by ids — either [AllowedIds]-declared or by the look of its current keys —
+  // softly flag keys that don't fit the 24-hex shape and offer name resolution + a Browse picker.
+  // [Choices] on the dict constrains its keys to a fixed set — keys render as <select>. Mutually
+  // exclusive with id-keying.
+  const keyChoices = (node.Choices && node.Choices.length) ? node.Choices : null;
+
+  const keyAllowed = (node.AllowedIds && node.AllowedIds.length) ? node.AllowedIds : null;
+  let idKeyed = !keyChoices && keyAllowed != null;
+  if (!idKeyed && !keyChoices) {
+    for (const k of Object.keys(obj)) { if (MONGOID_RE.test(k)) { idKeyed = true; break; } }
+  }
+
+  const stack = isContainerKind(tpl.Kind);   // object/list/dict value → key on its own line
+
+  const keys = Object.keys(obj);
+  if (stack && keys.length > 1) {
+    const paths = [];
+    for (const k of keys) paths.push(path + '/' + k);
+    box.appendChild(entryFoldButton(paths));
+  }
+
+  const rows = document.createElement('div');
+  rows.className = 'rows';
+  for (const key of Object.keys(obj)) {
+    const row = document.createElement('div');
+    row.className = stack ? 'row stack' : 'row';
+
+    const keywrap = document.createElement('div');
+    keywrap.className = 'keywrap';
+    const keyrow = document.createElement('div');
+    keyrow.className = 'keyrow';
+
+    // Choice-keyed maps: a <select> of the allowed names, with names already used by another row
+    // greyed out. Otherwise a text input (id or free string).
+    let keyInput;
+    if (keyChoices) {
+      keyInput = document.createElement('select');
+      keyInput.className = 'rkey'; keyInput.disabled = readonly;
+      const used = new Set(Object.keys(obj));
+      const opts = keyChoices.slice();
+      if (!opts.includes(key)) opts.unshift(key);   // tolerate an unknown/stale key
+      for (const c of opts) {
+        const o = document.createElement('option');
+        const lbl = choiceLabel(node, c);
+        o.value = c; o.textContent = (c !== key && used.has(c)) ? lbl + ' (in use)' : lbl;
+        if (c === key) o.selected = true;
+        if (c !== key && used.has(c)) o.disabled = true;
+        keyInput.appendChild(o);
+      }
+    } else {
+      keyInput = document.createElement('input');
+      keyInput.type = 'text'; keyInput.className = 'rkey'; keyInput.value = key;
+      keyInput.placeholder = idKeyed ? '24-hex id' : 'key'; keyInput.disabled = readonly;
+      keyInput.spellcheck = false;
+    }
+
+    // id-keyed maps get the same in-field name overlay; a plain-string map keeps a bare input.
+    const keyIdf = idKeyed ? makeIdField(keyInput, 'keyfield') : null;
+
+    const flagKey = () => {
+      const bad = idKeyed && keyInput.value.trim().length > 0 && !MONGOID_RE.test(keyInput.value.trim());
+      keyInput.classList.toggle('badid', bad);
+      keyInput.title = bad ? "doesn't look like a 24-hex id" : '';
+      if (keyIdf) paintIdName(keyIdf.name, keyInput.value);
+    };
+    // Rename the current key to `raw`, refusing an empty or already-taken name (same guard the text
+    // edit used). Shared by the text field's change event and the Browse picker.
+    const renameTo = (raw) => {
+      const nk = (raw || '').trim();
+      const cur = get();
+      if (nk === key) return;
+      if (!nk || Object.prototype.hasOwnProperty.call(cur, nk)) {
+        keyInput.value = key;
+        keyInput.classList.add('badrange');
+        setTimeout(() => keyInput.classList.remove('badrange'), 900);
+        return;
+      }
+      const rebuilt = {};
+      for (const k of Object.keys(cur)) rebuilt[k === key ? nk : k] = cur[k];
+      replaceContents(cur, rebuilt);
+      reRender(); markDirty();
+    };
+    if (keyChoices) {
+      keyInput.addEventListener('change', () => renameTo(keyInput.value));
+    } else {
+      flagKey();
+      keyInput.addEventListener('input', flagKey);
+      keyInput.addEventListener('change', () => renameTo(keyInput.value));
+    }
+
+    keyrow.appendChild(keyIdf ? keyIdf.field : keyInput);
+    if (!readonly && idKeyed) {
+      appendPickButtons(keyrow, keyAllowed, id => renameTo(id));
+    }
+
+    // [FetchSource] on the entry template: a button that GETs the templated URL ({key} -> this
+    // entry's key) and fills every [SourceField]-tagged leaf under the entry from the response.
+    if (!readonly && tpl.FetchUrl) {
+      const fetchBtn = document.createElement('button');
+      fetchBtn.type = 'button'; fetchBtn.className = 'mini ghost'; fetchBtn.textContent = 'Fetch';
+      fetchBtn.title = 'fill this entry from ' + tpl.FetchUrl.replace('{key}', key || '{key}');
+      fetchBtn.addEventListener('click', async () => {
+        const k = (key || '').trim();
+        if (!k) { showMsg('err', 'set the key first, then Fetch'); return; }
+        fetchBtn.disabled = true; fetchBtn.textContent = 'Fetching…';
+        try {
+          const res = await fetch(tpl.FetchUrl.replace('{key}', encodeURIComponent(k)));
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const doc = await res.json();
+          const n = fillFromSource(tpl, get()[k], doc);
+          reRender(); markDirty();
+          showMsg(n ? 'ok' : 'err', n
+            ? ('filled ' + n + (n === 1 ? ' field' : ' fields') + ' from source')
+            : 'nothing filled — the source document had no matching fields');
+        } catch (e) {
+          showMsg('err', 'fetch failed: ' + e.message);
+          fetchBtn.disabled = false; fetchBtn.textContent = 'Fetch';
+        }
+      });
+      keyrow.appendChild(fetchBtn);
+    }
+
+    let rm = null;
+    if (!readonly) {
+      rm = document.createElement('button');
+      rm.className = 'rm'; rm.type = 'button'; rm.textContent = 'Remove';
+      rm.addEventListener('click', () => { delete get()[key]; reRender(); markDirty(); });
+    }
+    // On a stacked row (object/list/dict value on its own line below) put Remove up in the key row,
+    // right of the pickers, instead of stranding it under the tall value. Inline rows keep it at the end.
+    if (rm && stack) keyrow.appendChild(rm);
+
+    keywrap.appendChild(keyrow);
+    row.appendChild(keywrap);
+
+    const val = document.createElement('div');
+    val.className = 'rval';
+    val.appendChild(renderValueByKind(tpl, () => get()[key], v => { get()[key] = v; }, path + '/' + key, null));
+    row.appendChild(val);
+
+    if (rm && !stack) row.appendChild(rm);
+    rows.appendChild(row);
+  }
+  box.appendChild(rows);
+
+  if (!Object.keys(obj).length) {
+    const e = document.createElement('div');
+    e.className = 'empty'; e.textContent = '(no entries)';
+    box.appendChild(e);
+  }
+  if (!readonly) {
+    const add = document.createElement('button');
+    add.className = 'mini'; add.type = 'button'; add.textContent = '+ Add entry';
+    if (keyChoices) {
+      const free = keyChoices.filter(c => !Object.prototype.hasOwnProperty.call(obj, c));
+      if (!free.length) { add.disabled = true; add.textContent = '+ Add entry (all options in use)'; }
+    }
+    add.addEventListener('click', () => {
+      const cur = get();
+      let k;
+      if (keyChoices) {
+        k = keyChoices.find(c => !Object.prototype.hasOwnProperty.call(cur, c));
+        if (!k) return;
+      } else {
+        k = 'newKey'; let n = 2;
+        while (Object.prototype.hasOwnProperty.call(cur, k)) k = 'newKey' + (n++);
+      }
+      cur[k] = defaultFor(tpl);
+      reRender(); markDirty();
+    });
+    box.appendChild(add);
+  }
+  return box;
+}
+
+// mutate `target` in place so closures over it stay valid
+function replaceContents(target, src) {
+  for (const k of Object.keys(target)) delete target[k];
+  for (const k of Object.keys(src)) target[k] = src[k];
+}
+
+// A value whose kind may be a container (used for list items / dict entries). allowedIds is the
+// [AllowedIds] of the CONTAINING list/dict (list elements inherit it; dict values do not — an
+// AllowedIds on a dict constrains its keys), so it's threaded down to the leaf scalar.
+function renderValueByKind(node, get, set, path, allowedIds) {
+  if (isContainerKind(node.Kind)) {
+    return renderContainer(node, get, set, { bare: true, path });
+  }
+  const holder = document.createElement('div');
+  holder.appendChild(renderScalar(node, get, set, allowedIds));
+  if (node.Comment) {
+    holder.classList.add('hascmt');
+    holder.dataset.cmt = node.Comment;
+  }
+  return holder;
+}
+
+function renderScalar(node, get, set, allowedIds) {
+  // [Choices]: a fixed value set — render a <select> whatever the underlying leaf kind is.
+  if (node.Choices && node.Choices.length && isScalarKind(node.Kind)) {
+    const sel = document.createElement('select');
+    sel.disabled = readonly;
+    const cur = get();
+    if (!node.Required) {
+      const o = document.createElement('option');
+      o.value = ''; o.textContent = '(unset)';
+      sel.appendChild(o);
+    }
+    const vals = node.Choices.slice();
+    if (cur != null && cur !== '' && !vals.includes(String(cur))) vals.unshift(String(cur));
+    for (const v of vals) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = choiceLabel(node, v);
+      if (String(cur) === v) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => {
+      set(sel.value === '' ? (node.Required ? node.Choices[0] : undefined) : sel.value);
+      markDirty();
+    });
+    return sel;
+  }
+  switch (node.Kind) {
+    case 'bool': {
+      const wrap = document.createElement('label');
+      wrap.className = 'toggle';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = !!get(); cb.disabled = readonly;
+      const track = document.createElement('span'); track.className = 'track';
+      const tval = document.createElement('span'); tval.className = 'tval'; tval.textContent = cb.checked ? 'true' : 'false';
+      cb.addEventListener('change', () => { set(cb.checked); tval.textContent = cb.checked ? 'true' : 'false'; markDirty(); });
+      wrap.appendChild(cb); wrap.appendChild(track); wrap.appendChild(tval);
+      return wrap;
+    }
+    case 'enum': {
+      const sel = document.createElement('select');
+      sel.disabled = readonly;
+      const vals = node.EnumValues || [];
+      const cur = get();
+      if (cur != null && !vals.includes(cur)) vals.unshift(String(cur));
+      for (const v of vals) {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        if (v === cur) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.addEventListener('change', () => { set(sel.value); markDirty(); });
+      return sel;
+    }
+    case 'int':
+    case 'number': {
+      // [Percent]: the model holds a 0..1 fraction, the input shows/takes 0..100. Everything else
+      // (Min/Max, required-empty fallback) stays in fraction terms; only the visible number scales.
+      const pct = !!node.Percent;
+      const pctClean = n => (Number.isFinite(n) ? Number(n.toPrecision(12)) : n);
+      const toView = v => (v == null ? '' : (pct ? pctClean(v * 100) : v));
+      const fromView = n => (pct ? pctClean(n / 100) : (node.Kind === 'int' ? Math.round(n) : n));
+
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = (node.Kind === 'int' && !pct) ? '1' : 'any';
+      if (node.Min != null) inp.min = pct ? pctClean(node.Min * 100) : node.Min;
+      if (node.Max != null) inp.max = pct ? pctClean(node.Max * 100) : node.Max;
+      inp.value = toView(get());
+      inp.disabled = readonly;
+      inp.addEventListener('input', () => {
+        if (inp.value === '') {
+          set(node.Required ? (node.Min != null ? node.Min : 0) : null);
+        } else {
+          const n = inp.valueAsNumber;
+          if (Number.isNaN(n)) return;
+          set(fromView(n));
+        }
+        inp.classList.toggle('badrange', inp.value !== '' && !inp.checkValidity());
+        markDirty();
+      });
+      if (!pct) return inp;
+
+      const wrap = document.createElement('span');
+      wrap.className = 'pctwrap';
+      const sign = document.createElement('span');
+      sign.className = 'pctsign'; sign.textContent = '%';
+      wrap.appendChild(inp);
+      wrap.appendChild(sign);
+      return wrap;
+    }
+    case 'mongoId': {
+      const holder = document.createElement('div');
+      const line = document.createElement('div');
+      line.className = 'idline';
+
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.spellcheck = false; inp.className = 'idinput';
+      inp.placeholder = '24-hex id (0-9, a-f)';
+      const cur = get();
+      inp.value = cur == null ? '' : cur;
+      inp.disabled = readonly;
+
+      const idf = makeIdField(inp);
+
+      const err = document.createElement('p');
+      err.className = 'fhint iderr'; err.hidden = true;
+      err.textContent = 'not a valid id — expected 24 hex characters (0-9, a-f)';
+
+      const check = () => {
+        const v = inp.value.trim();
+        const bad = v.length > 0 && !MONGOID_RE.test(v);
+        inp.classList.toggle('badid', bad);
+        err.hidden = !bad;
+        paintIdName(idf.name, v);
+      };
+      inp.addEventListener('input', () => { set(inp.value); check(); markDirty(); });
+
+      line.appendChild(idf.field);
+      if (!readonly) {
+        appendPickButtons(line, allowedIds, id => {
+          inp.value = id; set(id); check(); markDirty();
+        });
+      }
+      check();
+      holder.appendChild(line);
+      holder.appendChild(err);
+      return holder;
+    }
+    default: {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      const cur = get();
+      inp.value = cur == null ? '' : cur;
+      inp.disabled = readonly;
+      inp.addEventListener('input', () => { set(inp.value); markDirty(); });
+      return inp;
+    }
+  }
+}
+
+// ---------- load / save ----------
+async function loadList() {
+  showMsg('', '');
+  try {
+    entries = await (await fetch('/webui/config')).json();
+  } catch (e) {
+    formEl.innerHTML = '<div class="msg err">could not reach /webui/config: ' + e.message + '</div>';
+    return;
+  }
+  pick.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = entries.length ? 'Select a config…' : 'No configs available';
+  pick.appendChild(placeholder);
+  for (const e of entries) {
+    const o = document.createElement('option');
+    o.value = e.mod;
+    o.textContent = e.mod + (e.save ? '' : '  (view only)');
+    pick.appendChild(o);
+  }
+  // Nothing is selected on load unless ?mod= names a real config — otherwise the page shows the
+  // "pick one" prompt until the user chooses from the dropdown.
+  const want = qs.get('mod');
+  pick.value = (want && entries.some(e => e.mod === want)) ? want : '';
+  await loadSelected();
+}
+
+async function loadSelected() {
+  showMsg('', '');
+  jsonNote.textContent = '';
+  selected = entries.find(e => e.mod === pick.value) || null;
+
+  if (!selected) {
+    schema = null; model = null;
+    collapsed.clear();
+    blurbEl.hidden = true;
+    viewOnlyEl.textContent = '';
+    saveBtn.disabled = revertBtn.disabled = true;
+    dirtyEl.hidden = true;
+    saveBar.hidden = true;
+    jsonPanel.open = false;
+    jsonPanel.hidden = true;
+    renderForm();   // clears #form, disables the expand/collapse buttons
+    if (entries.length) {
+      formEl.innerHTML = '<div class="pickprompt">Select a config to edit'
+        + '<span class="sub">choose a mod from the dropdown above</span></div>';
+    } else {
+      formEl.innerHTML = '<div class="pickprompt">No config-enabled mods are installed</div>';
+    }
+    const u = new URL(location.href);
+    u.searchParams.delete('mod');
+    history.replaceState(null, '', u);
+    return;
+  }
+
+  saveBar.hidden = false;
+  jsonPanel.hidden = false;
+
+  readonly = !selected.save;
+  viewOnlyEl.textContent = readonly ? 'this mod exposed no save route — view only' : '';
+
+  let view;
+  try {
+    view = await (await fetch(selected.get)).json();
+  } catch (e) {
+    formEl.innerHTML = '<div class="msg err">could not load ' + selected.get + ': ' + e.message + '</div>';
+    return;
+  }
+
+  schema = view.Schema;
+  model = clone(view.Current);
+  original = JSON.stringify(view.Current);
+  collapsed.clear();   // collapse state is per-mod; a fresh load starts fully expanded
+
+  if (schema && schema.Header) {
+    blurbEl.hidden = false;
+    headerTextEl.textContent = schema.Header;
+  } else {
+    blurbEl.hidden = true;
+  }
+
+  renderForm();
+  if (jsonPanel.open) jsonArea.value = pretty(model);
+  markDirty();
+  // history so a refresh / share keeps the mod
+  const u = new URL(location.href);
+  u.searchParams.set('mod', selected.mod);
+  history.replaceState(null, '', u);
+}
+
+saveBtn.addEventListener('click', async () => {
+  if (!selected || !selected.save || readonly) return;
+  saveBtn.disabled = true;
+  showMsg('', '');
+  try {
+    const res = await fetch(selected.save, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(model),
+    });
+    const r = await res.json();
+    const notes = (r.Messages && r.Messages.length) ? '\n' + r.Messages.join('\n') : '';
+    showMsg(r.Ok ? 'ok' : 'err', (r.Ok ? 'saved' : 'rejected — nothing was written') + notes);
+    if (r.Ok) await loadSelected();
+  } catch (e) {
+    showMsg('err', e.message);
+  } finally {
+    markDirty();
+  }
+});
+
+revertBtn.addEventListener('click', () => {
+  if (!isDirty()) return;
+  model = JSON.parse(original);
+  renderForm();
+  markDirty();
+  showMsg('', '');
+});
+
+// ---------- JSON panel ----------
+jsonPanel.addEventListener('toggle', () => {
+  if (jsonPanel.open && model) jsonArea.value = pretty(model);
+});
+$('jsonapply').addEventListener('click', () => {
+  let parsed;
+  try { parsed = JSON.parse(jsonArea.value); }
+  catch (e) { jsonNote.textContent = 'not valid JSON: ' + e.message; return; }
+  jsonNote.textContent = 'applied to form';
+  model = parsed;
+  renderForm();
+  markDirty();
+});
+$('jsonreset').addEventListener('click', () => {
+  jsonArea.value = pretty(model);
+  jsonNote.textContent = 'reset';
+});
+
+// Accent the left-bar of the innermost block that currently holds focus, so the category/entry you're
+// editing is easy to spot. focusin/out bubble to the form; we light the nearest fieldset.node only.
+function clearFocusBar() {
+  const cur = formEl.querySelector('fieldset.node.focus');
+  if (cur) cur.classList.remove('focus');
+}
+formEl.addEventListener('focusin', e => {
+  clearFocusBar();
+  const node = e.target.closest ? e.target.closest('fieldset.node') : null;
+  if (node) node.classList.add('focus');
+});
+formEl.addEventListener('focusout', e => {
+  if (!e.relatedTarget || !formEl.contains(e.relatedTarget)) clearFocusBar();
+});
+
+pick.addEventListener('change', loadSelected);
+$('reload').addEventListener('click', loadList);
+$('expandall').addEventListener('click', () => { collapsed.clear(); reRender(); });
+$('collapseall').addEventListener('click', () => {
+  for (const p of collapsiblePaths) collapsed.add(p);
+  reRender();
+});
+initFloatTip();
+// Names must be in hand before the first render so mongoId tags resolve on load, not one paint late.
+loadNames().then(loadList);
+</script>
+</body>
+</html>

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barter Economy</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Optional cross-mod nav rail (LeavesUtils). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+<style>
+  body { padding: 0; }
+
+  /* Left sidebar (QR-style): title + page switcher. The main column keeps its full height for content. */
+  .layout { display: flex; align-items: stretch; min-height: 100vh; }
+  .side {
+    width: 220px; flex: none; box-sizing: border-box; background: var(--panel);
+    border-right: 1px solid var(--border-dim); padding: 18px 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .side h1 { font-size: 17px; margin: 0 0 6px; color: var(--gold-dim); font-weight: 650; }
+  .sidesep { height: 1px; background: var(--border-dim); margin: 4px 0; }
+  .navbtn {
+    display: block; width: 100%; box-sizing: border-box; text-align: left; cursor: pointer;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px; text-decoration: none;
+  }
+  .navbtn:hover { border-color: var(--border-hover); color: var(--link-hover); }
+  .navbtn.active { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+  .sidenote { margin-top: auto; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+
+  .main { flex: 1; min-width: 0; box-sizing: border-box; padding: 20px 22px; }
+  @media (max-width: 760px) {
+    .layout { flex-direction: column; }
+    .side { width: auto; border-right: none; border-bottom: 1px solid var(--border-dim); }
+  }
+
+  .sub { color: var(--muted); font-size: 13px; margin-top: 16px; }
+  .sub b { color: var(--text-2); font-weight: 600; }
+
+  /* Card grid of traders. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .card-head { display: flex; align-items: center; gap: 12px; }
+  .avatar {
+    width: 46px; height: 46px; border-radius: 8px; object-fit: cover; flex: 0 0 auto;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .avatar.broken { display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .name { font-size: 16px; font-weight: 600; color: var(--text); }
+  .tid { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
+
+  /* One timing row: label on the left, value on the right. */
+  .rows { display: flex; flex-direction: column; gap: 9px; }
+  .trow { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .tlabel { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  .tval { text-align: right; }
+  .count { font-size: 15px; font-weight: 600; color: var(--gold); font-variant-numeric: tabular-nums; }
+  .count.ready { color: var(--green-bright); }
+  .abs { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .na { color: var(--muted); font-size: 13px; }
+
+  .status { margin-top: 18px; font-size: 12px; color: var(--muted); }
+  .status.err { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>🤝 Barter Economy</h1>
+    <div class="sidesep"></div>
+    <a class="navbtn active" href="/bartereconomy/ui">⏱️ Timers</a>
+    <a class="navbtn" href="/bartereconomy/ui/trades">💱 Trades</a>
+    <a class="navbtn" href="/bartereconomy/ui/search">🔍 Search</a>
+    <a class="navbtn" href="/bartereconomy/ui/tiers">📊 Tier list</a>
+    <a class="navbtn" href="/bartereconomy/ui/pinned">📌 Pinned</a>
+    <div class="sidenote">Next trader resupply &amp; projected next barter re-roll, per trader.</div>
+  </aside>
+  <main class="main">
+    <div class="grid" id="grid"></div>
+    <div class="sub" id="meta"></div>
+    <div class="status" id="status">Loading…</div>
+  </main>
+</div>
+
+<script>
+  "use strict";
+  const $ = s => document.querySelector(s);
+  const grid = $("#grid");
+
+  // Live report from /api/status, plus the wall-clock offset between the server and this browser
+  // (the report timestamps are in the SERVER's unix-seconds clock; we tick locally against that).
+  let report = null;
+  let serverSkew = 0; // serverNow - browserNow, seconds
+
+  function serverNowSec() {
+    return Math.floor(Date.now() / 1000) + serverSkew;
+  }
+
+  // Seconds -> "2d 3h 4m 5s" / "5m 12s" / "12s". Drops leading zero units, but ALWAYS keeps seconds so
+  // every countdown visibly ticks in real time.
+  function humanDuration(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const parts = [];
+    if (d) parts.push(d + "d");
+    if (h || d) parts.push(h + "h");
+    if (m || h || d) parts.push(m + "m");
+    parts.push(s + "s");
+    return parts.join(" ");
+  }
+
+  // Absolute local time for a server unix-seconds timestamp.
+  function absTime(unixSec) {
+    if (!unixSec) return "";
+    return new Date(unixSec * 1000).toLocaleString();
+  }
+
+  // A countdown cell: green ready label once the target is in the past, otherwise the remaining time.
+  function countdownHtml(targetSec, readyLabel) {
+    if (targetSec == null || targetSec <= 0) {
+      return '<span class="na">—</span>';
+    }
+    const remain = targetSec - serverNowSec();
+    if (remain <= 0) {
+      return '<span class="count ready">' + readyLabel + '</span>' +
+             '<span class="abs">' + absTime(targetSec) + '</span>';
+    }
+    return '<span class="count">' + humanDuration(remain) + '</span>' +
+           '<span class="abs">' + absTime(targetSec) + '</span>';
+  }
+
+  // The projected re-roll timestamp (server unix seconds), or null when there's nothing to project. A
+  // re-roll only happens on an actual resupply, so this is the first resupply on/after the lock ends:
+  //   - lock up by the next scheduled resupply -> that resupply time (known exactly).
+  //   - otherwise -> step forward from the next resupply by the AVERAGE cycle until we're past the lock.
+  //     (Cycle length is randomized per resupply, so this is a best estimate, not a guarantee.)
+  function projectedReroll(t) {
+    if (t.lockEnds == null) return null;
+    if (t.lockEnds <= t.nextResupply) return t.nextResupply;
+    const avg = (t.resupplyMin > 0 && t.resupplyMax > 0) ? (t.resupplyMin + t.resupplyMax) / 2 : 0;
+    if (avg <= 0) return t.lockEnds; // no period data: fall back to the lock end
+    let r = t.nextResupply;
+    // Bounded loop: the lock window is finite, so this always terminates well within a few hundred steps.
+    while (r < t.lockEnds) r += avg;
+    return Math.round(r);
+  }
+
+  // The "Next barter re-roll" cell: a countdown to the projected re-roll time + that date/time beneath it
+  // (same clean format as the resupply row), or a short state when there's nothing to project.
+  function rerollCellHtml(t) {
+    if (!report.saveLoadEnabled) return '<span class="na">save-load off</span>';
+    if (t.lockEnds == null) {
+      return t.lastReroll
+        ? '<span class="na">frozen (no lock)</span>'
+        : '<span class="na">not rolled yet</span>';
+    }
+    return countdownHtml(projectedReroll(t), "now");
+  }
+
+  // Build one trader card. Rebuilt whole on each fetch; the resupply countdown refreshes in place via tick().
+  function cardHtml(t) {
+    // The avatar path (a hashed filename) comes from the server; may be null for a broken trader.
+    const avatarImg = t.avatar
+      ? '<img class="avatar" src="' + escapeHtml(t.avatar) + '" alt="" ' +
+        'onerror="this.classList.add(\'broken\');this.removeAttribute(\'src\');this.textContent=\'🧍\';">'
+      : '<div class="avatar broken">🧍</div>';
+
+    return '' +
+      '<div class="card" data-id="' + t.id + '">' +
+        '<div class="card-head">' +
+          avatarImg +
+          '<div>' +
+            '<div class="name">' + escapeHtml(t.nickname || t.id) + '</div>' +
+            '<div class="tid">' + t.id + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="rows">' +
+          '<div class="trow">' +
+            '<span class="tlabel">Next resupply</span>' +
+            '<span class="tval" data-resupply>' + countdownHtml(t.nextResupply, "due") + '</span>' +
+          '</div>' +
+          '<div class="trow">' +
+            '<span class="tlabel">Next barter re-roll</span>' +
+            '<span class="tval" data-reroll>' + rerollCellHtml(t) + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // Refresh both ticking countdowns (resupply + projected re-roll) in place, so the numbers stay live.
+  function tick() {
+    if (!report) return;
+    for (const t of report.traders) {
+      const card = grid.querySelector('.card[data-id="' + CSS.escape(t.id) + '"]');
+      if (!card) continue;
+      card.querySelector("[data-resupply]").innerHTML = countdownHtml(t.nextResupply, "due");
+      card.querySelector("[data-reroll]").innerHTML = rerollCellHtml(t);
+    }
+  }
+
+  function render() {
+    if (!report.traders.length) {
+      grid.innerHTML = '';
+      $("#meta").textContent = '';
+      $("#status").textContent =
+        "No traders reported yet — barters build lazily on the first trader update after server start. " +
+        "Reload in a moment.";
+      return;
+    }
+
+    const lockTxt = !report.saveLoadEnabled
+      ? "Save-load barters: off"
+      : (report.lockHours > 0
+          ? "Save-load lock: " + report.lockHours + "h"
+          : "Save-load: freeze forever");
+    $("#meta").innerHTML = "<b>" + report.traders.length + "</b> traders · " + escapeHtml(lockTxt);
+
+    grid.innerHTML = report.traders.map(cardHtml).join("");
+    $("#status").textContent = "Updated " + new Date().toLocaleTimeString();
+  }
+
+  async function load() {
+    try {
+      const res = await fetch("/bartereconomy/api/status", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      report = await res.json();
+      serverSkew = (report.now || 0) - Math.floor(Date.now() / 1000);
+      $("#status").classList.remove("err");
+      render();
+    } catch (e) {
+      $("#status").classList.add("err");
+      $("#status").textContent = "Failed to load status: " + e.message;
+    }
+  }
+
+  load();
+  setInterval(tick, 1000);      // smooth local countdown (resupply row)
+  setInterval(load, 60000);     // re-sync with the server once a minute
+</script>
+</body>
+</html>

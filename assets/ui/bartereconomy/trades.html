@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barter Economy — Trades</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Optional cross-mod nav rail (LeavesUtils). Also publishes window.LeavesSearch + Ctrl+F/Esc. -->
+<script defer src="/webui/rail.js"></script>
+<style>
+  body { padding: 0; }
+
+  .layout { display: flex; align-items: stretch; min-height: 100vh; }
+  .side {
+    width: 220px; flex: none; box-sizing: border-box; background: var(--panel);
+    border-right: 1px solid var(--border-dim); padding: 18px 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .side h1 { font-size: 17px; margin: 0 0 6px; color: var(--gold-dim); font-weight: 650; }
+  .sidesep { height: 1px; background: var(--border-dim); margin: 4px 0; }
+  .navbtn {
+    display: block; width: 100%; box-sizing: border-box; text-align: left; cursor: pointer;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px; text-decoration: none;
+  }
+  .navbtn:hover { border-color: var(--border-hover); color: var(--link-hover); }
+  .navbtn.active { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+  .sidenote { margin-top: auto; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+
+  .main { flex: 1; min-width: 0; box-sizing: border-box; padding: 20px 22px; }
+  @media (max-width: 760px) {
+    .layout { flex-direction: column; }
+    .side { width: auto; border-right: none; border-bottom: 1px solid var(--border-dim); }
+  }
+
+  /* Trader selector. */
+  .traders { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
+  .tbtn {
+    display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 5px 10px 5px 5px;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 20px;
+    font-size: 13px;
+  }
+  .tbtn:hover { border-color: var(--border-hover); }
+  .tbtn.active { background: var(--surface); border-color: var(--accent); color: var(--text); font-weight: 600; }
+  .tbtn.unmanaged { border-style: dashed; color: var(--text-2); }
+  .tbtn img { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; background: var(--surface); }
+  .tdiv { width: 1px; align-self: stretch; background: var(--border-dim); margin: 2px 2px; }
+
+  .bar { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  input[type=text] {
+    flex: 1; min-width: 220px; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 14px;
+  }
+  .toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); cursor: pointer; user-select: none; white-space: nowrap; }
+  .toggle input { width: 15px; height: 15px; }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  /* Loyalty filter dropdown. */
+  .dropdown { position: relative; }
+  .ddbtn { background: var(--surface); color: var(--text-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .ddbtn:hover { border-color: var(--border-hover); }
+  .ddpanel { display: none; position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; min-width: 130px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+  .dropdown.open .ddpanel { display: block; }
+  .ddpanel label { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 13px; color: var(--text); cursor: pointer; border-radius: 5px; }
+  .ddpanel label:hover { background: var(--surface-2); }
+  .ddpanel input { width: 15px; height: 15px; }
+  .ddsep { height: 1px; background: var(--border-dim); margin: 4px 2px; }
+  .ddall { font-size: 12px; color: var(--link); cursor: pointer; padding: 4px 8px; display: inline-block; }
+  .ddall:hover { color: var(--link-hover); }
+
+  /* Stash overlay picker: choose a profile + load its stash to colour payment items you can/can't afford. */
+  .stashctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  select.ddbtn { max-width: 180px; }
+  .stashinfo { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .stashinfo.err { color: var(--red); }
+
+  /* Category / sub-category disclosures. */
+  details.cat { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--panel); overflow: hidden; }
+  details.cat > summary { list-style: none; cursor: pointer; padding: 10px 12px; display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 650; color: var(--gold-dim); user-select: none; }
+  details.cat > summary::-webkit-details-marker { display: none; }
+  summary .caret { color: var(--muted); font-size: 11px; width: 10px; transition: transform .12s ease; }
+  details[open] > summary .caret { transform: rotate(90deg); }
+  summary .cnt { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: auto; }
+  .caticon { width: 20px; height: 20px; object-fit: contain; flex: 0 0 auto; }
+  .catbody { padding: 4px 10px 8px; }
+  details.sub { border-top: 1px solid var(--border-dim); }
+  details.sub:first-child { border-top: none; }
+  details.sub > summary { list-style: none; cursor: pointer; padding: 7px 4px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-2); user-select: none; }
+  details.sub > summary::-webkit-details-marker { display: none; }
+  .subicon { width: 16px; height: 16px; object-fit: contain; flex: 0 0 auto; }
+  .subbody { padding: 2px 0 6px 22px; }
+
+  /* One trade. */
+  .trade { display: flex; align-items: baseline; gap: 10px; padding: 5px 6px; border-radius: 6px; border-bottom: 1px solid var(--border-dim); }
+  .trade:last-child { border-bottom: none; }
+  .sold { flex: 0 0 40%; min-width: 0; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .sname { color: var(--text); font-size: 13px; }
+  .sshort { color: var(--muted); font-size: 11px; }
+  .crumb { color: var(--muted); font-size: 11px; margin-right: 6px; white-space: nowrap; }
+  .arrow { color: var(--muted); flex: 0 0 auto; }
+  .pay { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); }
+  .part { white-space: nowrap; }
+  .part + .part::before { content: "·"; color: var(--muted); margin: 0 6px; }
+  .part.cur { color: var(--gold); }
+  /* Payment parts render the short name but carry the full name in a title. A dotted underline +
+     help cursor signals there's more to see on hover. */
+  .part[title] { cursor: help; text-decoration: underline dotted var(--border-dim); text-underline-offset: 2px; }
+  .part[title]:hover { text-decoration-color: var(--border-hover); }
+  /* When a stash overlay is loaded, payment items are coloured by whether the stash can cover them. */
+  .part-item.have { color: var(--green); text-decoration-color: var(--green); }
+  .part-item.lack { color: var(--red); text-decoration-color: var(--red); }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); }
+  .tag.cash { color: var(--muted); }
+  .tag.barter { color: var(--green); border-color: var(--green); }
+  .ll { flex: 0 0 auto; display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 6px; width: 92px; white-space: nowrap; font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--gold); }
+  .ll .lbl { flex: 0 0 auto; }
+  .ll .stars { flex: 0 0 auto; width: 54px; text-align: left; letter-spacing: 1px; }
+
+  /* Stock badge: the trader's configured stock (DB assort), right-aligned before loyalty. */
+  .stock { flex: 0 0 auto; width: 64px; text-align: right; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+  .stock.inf { color: var(--gold); }
+  .stock.out { color: var(--red); }
+
+  /* Pin toggle: dim + greyed when off, full colour when the barter is pinned. */
+  .pin { flex: 0 0 auto; background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 5px; opacity: .3; filter: grayscale(1); }
+  .pin:hover { opacity: .85; background: var(--surface-2); }
+  .pin.on { opacity: 1; filter: none; }
+
+  .status { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .status.err { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>🤝 Barter Economy</h1>
+    <div class="sidesep"></div>
+    <a class="navbtn" href="/bartereconomy/ui">⏱️ Timers</a>
+    <a class="navbtn active" href="/bartereconomy/ui/trades">💱 Trades</a>
+    <a class="navbtn" href="/bartereconomy/ui/search">🔍 Search</a>
+    <a class="navbtn" href="/bartereconomy/ui/tiers">📊 Tier list</a>
+    <a class="navbtn" href="/bartereconomy/ui/pinned">📌 Pinned</a>
+    <div class="sidenote">Every trade a trader offers, grouped by handbook category. <span class="tag barter">barter</span> = generated item barter, <span class="tag cash">cash</span> = left as a cash trade. Dashed traders aren't barter-managed by this mod.</div>
+  </aside>
+  <main class="main">
+    <div class="traders" id="traders"><span class="hint">Loading traders…</span></div>
+    <div class="bar">
+      <input type="text" id="q" placeholder="Filter this trader's trades…  (a & b, a | b)" autocomplete="off">
+      <label class="toggle"><input type="checkbox" id="hideMoney"> Hide money trades</label>
+      <label class="toggle" title="Hide trades whose configured stock is 0. Unlimited-stock trades are never hidden."><input type="checkbox" id="hideOOS"> Hide out of stock</label>
+      <label class="toggle" title="With a stash loaded, hide item barters you can't afford. Money trades are never hidden by this."><input type="checkbox" id="hideUnaff"> Hide unaffordable</label>
+      <div class="dropdown" id="llDrop">
+        <button type="button" class="ddbtn" id="llBtn">Loyalty: all ▾</button>
+        <div class="ddpanel">
+          <label><input type="checkbox" class="llcb" data-ll="1"> LL1</label>
+          <label><input type="checkbox" class="llcb" data-ll="2"> LL2</label>
+          <label><input type="checkbox" class="llcb" data-ll="3"> LL3</label>
+          <label><input type="checkbox" class="llcb" data-ll="4"> LL4</label>
+          <div class="ddsep"></div>
+          <span class="ddall" id="llAll">All</span>
+        </div>
+      </div>
+      <div class="stashctl" title="Load a profile's stash to see which barter items you already own">
+        <select class="ddbtn" id="stashProfile"><option value="">Loading profiles…</option></select>
+        <button type="button" class="ddbtn" id="stashFetch">Load stash</button>
+        <button type="button" class="ddbtn" id="stashClear" style="display:none" title="Clear stash overlay">✕</button>
+        <span class="stashinfo" id="stashInfo"></span>
+      </div>
+    </div>
+    <div id="content"><div class="hint">Pick a trader.</div></div>
+    <div class="status" id="status"></div>
+  </main>
+</div>
+
+<script src="/bartereconomy/ui/common.js"></script>
+<script>
+  "use strict";
+  const $ = s => document.querySelector(s);
+
+  const LS = { trader: "be_trades_trader", hideMoney: "be_trades_hidemoney", loyalty: "be_trades_loyalty", stashProfile: "be_trades_stashprofile", hideUnaff: "be_trades_hideunaff", hideOOS: "be_trades_hideoos" };
+
+  let traders = [];        // [{id,nickname,avatar,managed,tradeCount}]
+  let currentTrader = null;
+  const cache = {};        // traderId -> per-trader report
+  let hideMoney = localStorage.getItem(LS.hideMoney) === "1";
+  let hideUnaffordable = localStorage.getItem(LS.hideUnaff) === "1";
+  let hideOutOfStock = localStorage.getItem(LS.hideOOS) === "1";
+
+  // Which category / sub-category groups are open, keyed by handbook category id so the same groups stay
+  // open when you switch traders (e.g. keep Gear -> Storage containers open across every trader). Updated
+  // from user toggles; programmatic open changes (search auto-open, restore-on-render) are suppressed.
+  let openCats = new Set();
+  let openSubs = new Set();
+  let suppressToggleSync = false;
+
+  function syncOpenSets() {
+    openCats = new Set();
+    for (const c of document.querySelectorAll("#content details.cat")) {
+      if (c.open) openCats.add(c.getAttribute("data-cat"));
+    }
+    openSubs = new Set();
+    for (const s of document.querySelectorAll("#content details.sub")) {
+      if (s.open) openSubs.add(s.getAttribute("data-sub"));
+    }
+  }
+
+  const loyalty = new Set(
+    (localStorage.getItem(LS.loyalty) || "1,2,3,4").split(",").map(s => parseInt(s, 10)).filter(n => n >= 1 && n <= 4)
+  );
+  function loyaltyAllowed(ll) { return ll < 1 || loyalty.has(ll); }
+  function saveLoyalty() { localStorage.setItem(LS.loyalty, Array.from(loyalty).sort().join(",")); }
+
+  // ---- Category-grouped view --------------------------------------------------------------------
+
+  function groupTrades(trades) {
+    const tops = new Map();
+    for (const t of trades) {
+      const topKey = t.topId || "_none";
+      if (!tops.has(topKey)) {
+        tops.set(topKey, { name: t.topName || "Uncategorized", icon: t.topIcon || "", subs: new Map(), count: 0 });
+      }
+      const top = tops.get(topKey);
+      top.count++;
+      const subKey = t.subId || "";
+      if (!top.subs.has(subKey)) {
+        top.subs.set(subKey, { name: t.subName || "", icon: t.subIcon || "", trades: [] });
+      }
+      top.subs.get(subKey).trades.push(t);
+    }
+    return tops;
+  }
+
+  // Trader identity handed to the pin buttons so a pinned snapshot can name/show its trader later.
+  function currentTraderMeta() {
+    const tr = traders.find(t => t.id === currentTrader);
+    return { id: currentTrader, nickname: tr ? tr.nickname : "", avatar: tr ? tr.avatar : null };
+  }
+
+  function renderTrader() {
+    const report = cache[currentTrader];
+    if (!report) return;
+    if (!report.trades.length) {
+      $("#content").innerHTML = '<div class="hint">No trades for this trader yet — reload in a moment.</div>';
+      $("#status").textContent = "";
+      return;
+    }
+
+    const tops = groupTrades(report.trades);
+    const topKeys = Array.from(tops.keys()).sort((a, b) => {
+      if (a === "_none") return 1; if (b === "_none") return -1;
+      return tops.get(a).name.localeCompare(tops.get(b).name);
+    });
+
+    let html = "";
+    for (const tk of topKeys) {
+      const top = tops.get(tk);
+      const subKeys = Array.from(top.subs.keys()).sort((a, b) => {
+        if (a === "") return -1; if (b === "") return 1;
+        return top.subs.get(a).name.localeCompare(top.subs.get(b).name);
+      });
+      let body = "";
+      const meta = currentTraderMeta();
+      for (const sk of subKeys) {
+        const sub = top.subs.get(sk);
+        const rows = sub.trades.map(t => tradeHtml(t, null, meta)).join("");
+        if (sk === "") {
+          body += '<div class="subbody" style="padding-left:0">' + rows + '</div>';
+        } else {
+          body += '<details class="sub" data-sub="' + escapeHtml(sk) + '"><summary>' + iconHtml(sub.icon, "subicon") +
+                  '<span>' + escapeHtml(sub.name) + '</span>' +
+                  '<span class="cnt">' + sub.trades.length + '</span></summary>' +
+                  '<div class="subbody">' + rows + '</div></details>';
+        }
+      }
+      html += '<details class="cat" data-cat="' + escapeHtml(tk) + '"><summary>' +
+                '<span class="caret">▶</span>' + iconHtml(top.icon, "caticon") +
+                '<span>' + escapeHtml(top.name) + '</span>' +
+                '<span class="cnt">' + top.count + ' trades</span></summary>' +
+                '<div class="catbody">' + body + '</div></details>';
+    }
+    $("#content").innerHTML = html;
+    // Re-attach toggle listeners to the fresh DOM so user opens/closes keep the persisted open sets current.
+    for (const d of document.querySelectorAll("#content details")) {
+      d.addEventListener("toggle", () => { if (!suppressToggleSync) syncOpenSets(); });
+    }
+
+    const cash = report.trades.filter(t => t.cash).length;
+    $("#status").textContent = report.trades.length + " trades · " + (report.trades.length - cash) +
+      " barter, " + cash + " cash · " + topKeys.length + " categories";
+    applyFilter(true);
+  }
+
+  function rowShows(row, q, exempt) {
+    if (hideMoney && row.getAttribute("data-cash") === "1" && !exempt) return false;
+    // Out of stock = data-stock "0". Unlimited (-1) and any positive count are kept.
+    if (hideOutOfStock && row.getAttribute("data-stock") === "0") return false;
+    if (!loyaltyAllowed(parseInt(row.getAttribute("data-ll") || "0", 10))) return false;
+    // Hide-unaffordable: only with a stash loaded, and only for barters (never money trades). A row is
+    // unaffordable when any of its payment items is marked lacking (see applyStashColors).
+    if (hideUnaffordable && window.BE_STASH && row.getAttribute("data-cash") === "0" && row.querySelector(".part-item.lack")) return false;
+    return matches(row.getAttribute("data-hay"), q);
+  }
+
+  // manageOpen: re-derive each group's expanded state. With an active search, auto-open the groups that
+  // have matches; with no search, restore the persisted open sets (so switching trader keeps the same
+  // groups open). A loyalty/money/afford toggle passes manageOpen=false and never touches open state.
+  function applyFilter(manageOpen) {
+    const q = $("#q").value.trim();
+    const exempt = currentTrader === REF_ID;
+    for (const row of document.querySelectorAll("#content .trade")) {
+      row.style.display = rowShows(row, q, exempt) ? "" : "none";
+    }
+    const anyFilter = q.length > 0 || hideMoney || hideOutOfStock || loyalty.size < 4 || (hideUnaffordable && window.BE_STASH);
+    suppressToggleSync = true;
+    for (const sub of document.querySelectorAll("#content details.sub")) {
+      const has = !!sub.querySelector('.trade:not([style*="display: none"])');
+      sub.style.display = (anyFilter && !has) ? "none" : "";
+      if (manageOpen) sub.open = q.length > 0 ? has : openSubs.has(sub.getAttribute("data-sub"));
+    }
+    for (const cat of document.querySelectorAll("#content details.cat")) {
+      const has = !!cat.querySelector('.trade:not([style*="display: none"])');
+      cat.style.display = (anyFilter && !has) ? "none" : "";
+      if (manageOpen) cat.open = q.length > 0 ? has : openCats.has(cat.getAttribute("data-cat"));
+    }
+    suppressToggleSync = false;
+  }
+
+  // ---- Trader tabs + loading --------------------------------------------------------------------
+
+  function renderTraderTabs() {
+    const managed = traders.filter(t => t.managed);
+    const others = traders.filter(t => !t.managed);
+    const btn = t =>
+      '<button class="tbtn' + (t.id === currentTrader ? " active" : "") + (t.managed ? "" : " unmanaged") +
+        '" data-id="' + t.id + '" title="' + t.tradeCount + ' trades">' +
+        (t.avatar ? '<img src="' + escapeHtml(t.avatar) + '" alt="" onerror="this.style.display=\'none\'">' : '') +
+        '<span>' + escapeHtml(t.nickname || t.id) + '</span>' +
+      '</button>';
+    let html = managed.map(btn).join("");
+    if (managed.length && others.length) html += '<span class="tdiv"></span>';
+    html += others.map(btn).join("");
+    $("#traders").innerHTML = html;
+    for (const b of document.querySelectorAll(".tbtn")) {
+      b.addEventListener("click", () => selectTrader(b.getAttribute("data-id")));
+    }
+  }
+
+  async function selectTrader(id) {
+    currentTrader = id;
+    localStorage.setItem(LS.trader, id);
+    renderTraderTabs();
+    if (cache[id]) { renderTrader(); return; }
+    $("#content").innerHTML = '<div class="hint">Loading trades…</div>';
+    try {
+      const res = await fetch("/bartereconomy/api/trades?trader=" + encodeURIComponent(id), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      cache[id] = await res.json();
+      $("#status").classList.remove("err");
+      renderTrader();
+    } catch (e) {
+      $("#status").classList.add("err");
+      $("#status").textContent = "Failed to load trades: " + e.message;
+      $("#content").innerHTML = "";
+    }
+  }
+
+  async function loadTraders() {
+    try {
+      const res = await fetch("/bartereconomy/api/traders", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      traders = await res.json();
+      if (!traders.length) {
+        $("#traders").innerHTML = '<span class="hint">No traders with trades yet — reload in a moment.</span>';
+        return;
+      }
+      const saved = localStorage.getItem(LS.trader);
+      currentTrader = traders.find(t => t.id === saved) ? saved : traders[0].id;
+      selectTrader(currentTrader);
+    } catch (e) {
+      $("#traders").innerHTML = '<span class="hint" style="color:var(--red)">Failed to load traders: ' +
+        escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  // ---- Stash overlay ----------------------------------------------------------------------------
+  // Load a profile's stash (from LeavesUtils' shared /webui/db/stash) and colour each barter's payment
+  // items green (stash covers the required amount) or red (it doesn't). window.BE_STASH is the map that
+  // common.js's partHtml/stashClass read at render time; applyStashColors recolours already-rendered
+  // rows in place so loading a stash doesn't collapse the categories you have open.
+
+  function applyStashColors() {
+    for (const el of document.querySelectorAll("#content .part-item")) {
+      el.classList.remove("have", "lack");
+      if (!window.BE_STASH) continue;
+      const tpl = el.getAttribute("data-item");
+      const need = Math.ceil(parseFloat(el.getAttribute("data-need")) || 1);
+      const have = window.BE_STASH[tpl] || 0;
+      el.classList.add(have >= need ? "have" : "lack");
+    }
+  }
+
+  async function loadProfiles() {
+    try {
+      const res = await fetch("/webui/db/profiles", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const profs = await res.json();
+      const sel = $("#stashProfile");
+      if (!profs.length) { sel.innerHTML = '<option value="">No profiles</option>'; return; }
+      // Start with no profile selected (empty leading option) - the user picks one, then clicks Load stash.
+      sel.innerHTML = '<option value="">Select profile…</option>' + profs.map(p =>
+        '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.nickname) + " (L" + p.level + ")</option>").join("");
+    } catch (e) {
+      $("#stashProfile").innerHTML = '<option value="">Profiles failed</option>';
+    }
+  }
+
+  async function fetchStash() {
+    const id = $("#stashProfile").value;
+    if (!id) return;
+    localStorage.setItem(LS.stashProfile, id);
+    const info = $("#stashInfo");
+    info.classList.remove("err");
+    info.textContent = "Loading stash…";
+    try {
+      const res = await fetch("/webui/db/stash?profileId=" + encodeURIComponent(id), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      window.BE_STASH = data.items || {};
+      info.textContent = "✓ " + data.nickname + " — " + Object.keys(window.BE_STASH).length + " item types";
+      $("#stashClear").style.display = "";
+      applyStashColors();
+      applyFilter(false); // re-apply so "hide unaffordable" (if on) takes effect against the new stash
+    } catch (e) {
+      info.classList.add("err");
+      info.textContent = "Stash load failed: " + e.message;
+    }
+  }
+
+  function clearStash() {
+    window.BE_STASH = null;
+    $("#stashInfo").textContent = "";
+    $("#stashInfo").classList.remove("err");
+    $("#stashClear").style.display = "none";
+    applyStashColors();
+    applyFilter(false); // un-hide anything the "hide unaffordable" filter had removed
+  }
+
+  // ---- Loyalty dropdown -------------------------------------------------------------------------
+
+  function updateLoyaltyLabel() {
+    const n = loyalty.size;
+    $("#llBtn").textContent = "Loyalty: " + (n === 4 ? "all" : (n === 0 ? "none" : Array.from(loyalty).sort().map(l => "LL" + l).join(" "))) + " ▾";
+  }
+
+  function initLoyaltyDropdown() {
+    for (const cb of document.querySelectorAll(".llcb")) {
+      const lvl = parseInt(cb.getAttribute("data-ll"), 10);
+      cb.checked = loyalty.has(lvl);
+      cb.addEventListener("change", () => {
+        if (cb.checked) loyalty.add(lvl); else loyalty.delete(lvl);
+        saveLoyalty(); updateLoyaltyLabel(); applyFilter(false);
+      });
+    }
+    $("#llAll").addEventListener("click", () => {
+      loyalty.clear(); [1, 2, 3, 4].forEach(l => loyalty.add(l));
+      for (const cb of document.querySelectorAll(".llcb")) cb.checked = true;
+      saveLoyalty(); updateLoyaltyLabel(); applyFilter(false);
+    });
+    $("#llBtn").addEventListener("click", e => { e.stopPropagation(); $("#llDrop").classList.toggle("open"); });
+    document.addEventListener("click", e => { if (!$("#llDrop").contains(e.target)) $("#llDrop").classList.remove("open"); });
+    updateLoyaltyLabel();
+  }
+
+  $("#q").addEventListener("input", () => applyFilter(true));
+  $("#hideMoney").checked = hideMoney;
+  $("#hideMoney").addEventListener("change", () => {
+    hideMoney = $("#hideMoney").checked;
+    localStorage.setItem(LS.hideMoney, hideMoney ? "1" : "0");
+    applyFilter(false);
+  });
+
+  $("#hideOOS").checked = hideOutOfStock;
+  $("#hideOOS").addEventListener("change", () => {
+    hideOutOfStock = $("#hideOOS").checked;
+    localStorage.setItem(LS.hideOOS, hideOutOfStock ? "1" : "0");
+    applyFilter(false);
+  });
+
+  $("#hideUnaff").checked = hideUnaffordable;
+  $("#hideUnaff").addEventListener("change", () => {
+    hideUnaffordable = $("#hideUnaff").checked;
+    localStorage.setItem(LS.hideUnaff, hideUnaffordable ? "1" : "0");
+    applyFilter(false);
+  });
+
+  $("#stashFetch").addEventListener("click", fetchStash);
+  $("#stashClear").addEventListener("click", clearStash);
+
+  initLoyaltyDropdown();
+  initPins();
+  loadTraders();
+  loadProfiles();
+</script>
+</body>
+</html>

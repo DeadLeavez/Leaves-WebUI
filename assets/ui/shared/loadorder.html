@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaves Dev — Load Order</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Opt in to the shared nav rail (no-op / 404 if the rail isn't reachable). -->
+<script defer src="/webui/rail.js"></script>
+<style>
+/* Palette tokens, body baseline and base link colour come from the shared /webui/base.css, linked above.
+   Only this page's own styling lives here. */
+* { box-sizing: border-box; }
+body { padding:0 22px 60px; }
+
+.topbar { display:flex; align-items:baseline; gap:14px; padding:16px 0 10px; border-bottom:1px solid #2a2d34; flex-wrap:wrap; }
+.brand { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:18px; font-weight:700;
+  letter-spacing:.14em; text-transform:uppercase; color:#cbb089; }
+.brand .leaf { color:#c8843c; }
+.tagline { color:#9aa0a6; font-size:12.5px; }
+
+.controls { display:flex; gap:14px; align-items:center; max-width:1000px; margin:22px 0 6px; flex-wrap:wrap; }
+#search { flex:1; min-width:220px; background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:8px;
+  padding:11px 14px; font-size:15px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+#search:focus { outline:none; border-color:#c8843c; }
+.toggle { color:#c9cdd3; font-size:13px; display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; white-space:nowrap; }
+.toggle input { accent-color:#c8843c; width:15px; height:15px; }
+.count { color:#9aa0a6; font-size:12px; white-space:nowrap; }
+
+.legend { color:#8a8f96; font-size:12px; margin:8px 0 2px; max-width:1000px; line-height:1.5; }
+.legend code { color:#cbb089; }
+
+table { width:100%; border-collapse:collapse; margin-top:14px; }
+th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#9aa0a6;
+  padding:6px 10px; border-bottom:1px solid #3a3e46; position:sticky; top:0; background:#101216; }
+td { padding:7px 10px; vertical-align:top; border-bottom:1px solid #1e2127; font-size:13.5px; }
+tr:hover td { background:#16181c; }
+
+/* A faint rule between stage bands so the OnLoadOrder groupings read at a glance. */
+tr.bandstart td { border-top:2px solid #33373f; }
+
+.idx { color:#6f757c; font-family: ui-monospace, Consolas, monospace; font-size:12px; text-align:right; }
+.prio { font-family: ui-monospace, Consolas, monospace; font-size:12.5px; color:#e0c39f; white-space:nowrap; }
+.cls { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:13px; color:#e6e6e6; word-break:break-all; }
+.ns { color:#6f757c; }
+.inj { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:#8a8f96; }
+
+.stage { font-size:10.5px; letter-spacing:.04em; padding:2px 7px; border-radius:5px; border:1px solid #3a3e46;
+  color:#9aa0a6; white-space:nowrap; display:inline-block; }
+.stage.s-mod { border-color:#3a4a6a; color:#9fb6e0; } /* PostDBModLoader / PreSptModLoader — where mods live */
+.stage.s-late { border-color:#6a4a2a; color:#e0b06a; } /* PostSptModLoader / Unspecified — the tail end */
+
+/* Mod rows (not SPTarkov core) get a warm left edge so your own code stands out from the engine. */
+.mod .assembly { color:#e0c39f; }
+.mod td.colcls { box-shadow: inset 3px 0 0 #c8843c; }
+.assembly { font-family: ui-monospace, Consolas, monospace; font-size:12.5px; color:#9aa0a6; word-break:break-all; }
+
+#empty { color:#777; margin-top:30px; }
+.colidx { width:1%; } .colstage { width:1%; } .colprio { width:1%; } .colinj { width:1%; }
+.colcls { width:48%; } .colasm { width:22%; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="brand"><span class="leaf">🍃</span> Leaves Dev</span>
+  <span class="tagline">Every <code>IOnLoad</code> component the server runs at boot, in run order. Lower priority runs first.</span>
+</div>
+
+<div class="controls">
+  <input id="search" type="text" placeholder="Filter by class, mod, stage… (a &amp; b | c)" autocomplete="off">
+  <label class="toggle"><input type="checkbox" id="hidecore"> Hide SPTarkov core</label>
+  <span class="count" id="count"></span>
+</div>
+
+<div class="legend">
+  Order is decided purely by <code>Injectable.TypePriority</code> (ascending). Rows at the <em>same</em> priority
+  have <em>no</em> guaranteed order at runtime — if two things must be ordered, give them different priorities.
+  This shows <code>IOnLoad</code> order, which matches a mod's real effect order only when it does its work inside
+  <code>OnLoad</code>; work done elsewhere is invisible here.
+</div>
+
+<table id="tbl">
+  <thead><tr>
+    <th class="colidx">#</th>
+    <th class="colstage">Stage</th>
+    <th class="colprio">Priority</th>
+    <th class="colcls">Component</th>
+    <th class="colasm">Assembly / mod</th>
+    <th class="colinj">Lifetime</th>
+  </tr></thead>
+  <tbody id="out"></tbody>
+</table>
+<div id="empty" style="display:none">No IOnLoad components reported.</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var ALL = [];
+  var searchEl = document.getElementById("search");
+  var hideCoreEl = document.getElementById("hidecore");
+  var outEl = document.getElementById("out");
+  var countEl = document.getElementById("count");
+  var emptyEl = document.getElementById("empty");
+
+  function isCore(r) {
+    // Engine components ship in the SPTarkov.* assemblies; everything else is a mod (or its shared lib).
+    return r.assembly.indexOf("SPTarkov.") === 0;
+  }
+
+  function stageClass(stage) {
+    if (stage.indexOf("PostDBModLoader") === 0 || stage.indexOf("PreSptModLoader") === 0) { return "stage s-mod"; }
+    if (stage.indexOf("PostSptModLoader") === 0 || stage.indexOf("Unspecified") === 0) { return "stage s-late"; }
+    return "stage";
+  }
+
+  // Split a full type name into namespace + short name, so the class pops and the namespace recedes.
+  function splitClass(full) {
+    var dot = full.lastIndexOf(".");
+    if (dot === -1) { return ["", full]; }
+    return [full.substring(0, dot + 1), full.substring(dot + 1)];
+  }
+
+  function hay(r) {
+    return (r.class + " " + r.assembly + " " + r.stage + " " + r.priorityLabel).toLowerCase();
+  }
+
+  function cell(cls) { var td = document.createElement("td"); if (cls) { td.className = cls; } return td; }
+
+  function rowEl(r, prevStage) {
+    var tr = document.createElement("tr");
+    if (!isCore(r)) { tr.className = "mod"; }
+    if (r.stage !== prevStage) { tr.className = (tr.className ? tr.className + " " : "") + "bandstart"; }
+
+    var itd = cell("idx"); itd.textContent = r.index; tr.appendChild(itd);
+
+    var std = cell(); var sp = document.createElement("span");
+    sp.className = stageClass(r.stage); sp.textContent = r.stage; std.appendChild(sp); tr.appendChild(std);
+
+    var ptd = cell("prio"); ptd.textContent = r.priorityLabel; tr.appendChild(ptd);
+
+    var ctd = cell("colcls cls");
+    var parts = splitClass(r.class);
+    if (parts[0]) { var ns = document.createElement("span"); ns.className = "ns"; ns.textContent = parts[0]; ctd.appendChild(ns); }
+    ctd.appendChild(document.createTextNode(parts[1]));
+    tr.appendChild(ctd);
+
+    var atd = cell("assembly"); atd.textContent = r.assembly; tr.appendChild(atd);
+
+    var jtd = cell("inj"); jtd.textContent = r.injection; tr.appendChild(jtd);
+
+    return tr;
+  }
+
+  function render() {
+    var query = searchEl.value;
+    var hideCore = hideCoreEl.checked;
+    var LS = window.LeavesSearch;
+
+    outEl.textContent = "";
+    var shown = 0;
+    var prevStage = null;
+    for (var i = 0; i < ALL.length; i++) {
+      var r = ALL[i];
+      if (hideCore && isCore(r)) { continue; }
+      if (LS && !LS.test(hay(r), query)) { continue; }
+      outEl.appendChild(rowEl(r, prevStage));
+      prevStage = r.stage;
+      shown++;
+    }
+
+    countEl.textContent = shown + " / " + ALL.length + " components";
+    emptyEl.style.display = ALL.length === 0 ? "block" : "none";
+  }
+
+  searchEl.addEventListener("input", render);
+  hideCoreEl.addEventListener("change", render);
+
+  fetch("/webui/dev/loadorderJson", { cache: "no-store" })
+    .then(function (res) { return res.ok ? res.json() : []; })
+    .then(function (list) { ALL = Array.isArray(list) ? list : []; render(); })
+    .catch(function () { ALL = []; render(); });
+})();
+</script>
+</body>
+</html>

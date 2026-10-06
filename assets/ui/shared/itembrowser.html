@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaves Item Browser</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Opt in to the shared nav rail (no-op / 404 if Leaves-WebUI's rail isn't reachable). -->
+<script defer src="/webui/rail.js"></script>
+<style>
+/* Palette tokens, the body baseline (bg/text/font/margin) and the base link colour now come from the
+   shared /webui/base.css, linked before this block. Only item-browser-specific styling lives here. */
+* { box-sizing: border-box; }
+body { padding:0; } /* colours/font inherited from base.css; the .main column owns the page padding now */
+
+/* ---- Sidebar layout (same shape as the Questrandomizer page: a fixed-width .side panel beside a
+   flexing .main column). The sidebar holds the brand + the pinned-items list. ---- */
+.layout { display:flex; align-items:stretch; min-height:100vh; }
+.side { width:240px; flex:none; box-sizing:border-box; background:#16181c; border-right:1px solid #2a2d34;
+  padding:18px 14px; display:flex; flex-direction:column; gap:10px; }
+.side h1 { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:16px; font-weight:700;
+  letter-spacing:.12em; text-transform:uppercase; color:#cbb089; margin:0; }
+.side h1 .leaf { color:#c8843c; }
+.side .tagline { color:#9aa0a6; font-size:11.5px; line-height:1.45; margin:0; }
+.sidesep { height:1px; background:#2a2d34; margin:4px 0; }
+.sidehdr { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:.05em; display:flex;
+  align-items:center; gap:8px; }
+.sidehdr .pincount { color:#5a5f68; font-variant-numeric:tabular-nums; }
+/* The pinned list flexes to fill the sidebar height and scrolls internally when it gets long. */
+.pinlist { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:2px; }
+.pinempty { color:#5a5f68; font-size:12px; line-height:1.5; padding:4px 2px; }
+.pinrow { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px; cursor:pointer;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:12.5px; }
+.pinrow:hover { background:#23262c; }
+.pinrow.active { background:#2a2113; }
+.pinrow .pn { flex:1; min-width:0; color:#e6e6e6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pinrow .ps { color:#9aa0a6; font-size:11px; flex:none; }
+.pinrow .unpin { flex:none; background:none; border:none; color:#6b7280; font-size:15px; line-height:1;
+  cursor:pointer; padding:0 2px; }
+.pinrow .unpin:hover { color:#e88a8a; }
+
+.main { flex:1; min-width:0; box-sizing:border-box; padding:0 22px 60px; }
+@media (max-width: 760px) {
+  .layout { flex-direction:column; }
+  .side { width:auto; border-right:none; border-bottom:1px solid #2a2d34; }
+  .pinlist { max-height:200px; }
+}
+
+/* ---- Pin toggle button, shown next to the top id chip and next to every nameable id in the JSON tree.
+   A hollow star when the item isn't pinned, a filled amber one when it is. ---- */
+.pinbtn { background:none; border:none; cursor:pointer; color:#5a5f68; font-size:12px; line-height:1;
+  padding:0 2px; vertical-align:baseline; }
+.pinbtn:hover { color:#e8b04b; }
+.pinbtn.on { color:#e8b04b; }
+/* The top pin (next to the item's own id chip) reads larger and sits inline with the chip row. */
+.dhead > .pinbtn { font-size:17px; align-self:center; padding:0 4px; }
+
+.topbar { display:flex; align-items:baseline; gap:14px; padding:16px 0 10px; border-bottom:1px solid #2a2d34; }
+.tagline { color:#9aa0a6; font-size:12.5px; }
+
+.searchwrap { position:relative; max-width:900px; margin:26px auto 0; }
+/* Field + Clear button share one row and the same height, so the horizontal line stays uniform; the
+   field flexes to whatever width is left over. */
+.searchrow { display:flex; gap:8px; align-items:stretch; }
+.inputwrap { position:relative; flex:1; min-width:0; }
+#search { width:100%; background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:8px;
+  padding:12px 14px; font-size:15px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+#search:focus { outline:none; border-color:#c8843c; }
+#loadstate { position:absolute; right:14px; top:50%; transform:translateY(-50%); color:#9aa0a6; font-size:12px;
+  pointer-events:none; }
+.clearbtn { flex:none; background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:8px;
+  padding:12px 18px; font-size:15px; cursor:pointer; }
+.clearbtn:hover:not(:disabled) { border-color:#5a5f68; color:#fff; }
+.clearbtn:disabled { opacity:.4; cursor:default; }
+
+/* Autocomplete dropdown - rows of "name .......... SHORT", the first highlighted. */
+#drop { position:absolute; left:0; right:0; top:calc(100% + 4px); background:#16181c; border:1px solid #3a3e46;
+  border-radius:8px; max-height:340px; overflow:auto; z-index:20; display:none; }
+#drop.open { display:block; }
+.dropitem { display:flex; align-items:center; gap:12px; padding:8px 14px; cursor:pointer; border-bottom:1px solid #23262c;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:13.5px; }
+.dropitem:last-child { border-bottom:none; }
+.dropitem:hover, .dropitem.active { background:#23262c; }
+.dropitem .dn { flex:1; min-width:0; color:#e6e6e6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.dropitem .ds { color:#9aa0a6; font-size:12px; flex:none; }
+.dropempty { padding:10px 14px; color:#9aa0a6; font-size:13px; }
+
+.detail { max-width:900px; margin:24px auto 0; }
+.crumbs { color:#9aa0a6; font-size:12.5px; margin-bottom:12px; font-family: ui-monospace, Consolas, monospace; }
+.crumbs .sep { color:#5a5f68; margin:0 6px; }
+.crumbs .cur { color:#cbb089; }
+
+.dhead { display:flex; align-items:flex-start; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+.dtitle { font-size:22px; font-weight:700; margin:0; }
+.dhead .spacer { flex:1; }
+.chip { font-family: ui-monospace, Consolas, monospace; font-size:12px; background:#2a2d34; border:1px solid #3a3e46;
+  border-radius:6px; padding:6px 10px; color:#c9cdd3; cursor:pointer; }
+.chip:hover { border-color:#5a5f68; color:#fff; }
+a.chip { text-decoration:none; }
+.chip.modded { cursor:default; color:#c88a5a; border-color:#5a4230; background:#2c2118; }
+.chip.modded:hover { color:#c88a5a; border-color:#5a4230; }
+button.copy { background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:6px; padding:6px 12px;
+  font-size:13px; cursor:pointer; }
+button.copy:hover { border-color:#5a5f68; }
+.dsub { color:#9aa0a6; font-size:13px; margin:0 0 4px; font-family: ui-monospace, Consolas, monospace; }
+.dsub .price { color:#7fd694; }
+.ddesc { color:#b3b8bf; font-size:13px; line-height:1.5; margin:10px 0 0; padding:8px 12px; background:#1f2228;
+  border-left:2px solid #3a3f47; border-radius:3px; max-width:70ch; }
+
+/* Tree action bar - own row under the header so the buttons don't crowd the item name. */
+.dtoolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:16px; }
+.dtoolbar .tspacer { flex:1; }
+
+/* Collapsible JSON tree - same monospace / palette as the debug page's pre.dump, but interactive. */
+.tree { margin-top:20px; border:1px solid #3a3e46; border-radius:8px; background:#16181c; padding:12px 14px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:12.5px; line-height:1.55;
+  overflow:auto; }
+.jline { white-space:pre-wrap; word-break:break-word; padding-left:16px; }
+details.jobj { padding-left:16px; }
+details.jobj > summary { list-style:none; cursor:pointer; white-space:pre-wrap; }
+details.jobj > summary::-webkit-details-marker { display:none; }
+details.jobj > summary::before { content:"\25B8"; color:#6b7280; display:inline-block; width:12px; margin-left:-14px; }
+details.jobj[open] > summary::before { content:"\25BE"; }
+details.jobj > summary:hover { color:#fff; }
+.jkey { color:#cbb089; }
+.jmeta { color:#6b7280; }
+.jstr { color:#8fce8f; }
+.jnum { color:#e8b04b; }
+.jbool { color:#c88ce0; }
+.jnull { color:#e88a8a; }
+.jlink { color:#e8b04b; text-decoration:underline dotted; text-underline-offset:2px; cursor:pointer; }
+.jlink:hover { color:#ffc76b; }
+.jcmt { color:#6b7280; font-style:italic; margin-left:10px; }
+
+.hint { max-width:900px; margin:40px auto; color:#9aa0a6; font-size:14px; text-align:center; line-height:1.6; }
+.hint code { color:#cbb089; }
+.toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#23402a; color:#cdeecd;
+  border:1px solid #2f5c3b; border-radius:6px; padding:8px 16px; font-size:13px; opacity:0; transition:opacity .15s;
+  pointer-events:none; z-index:50; }
+.toast.show { opacity:1; }
+</style>
+</head>
+<body>
+
+<div class="layout">
+<aside class="side">
+  <h1><span class="leaf">Leaves</span> Items</h1>
+  <p class="tagline">Search every item in the loaded database, modded items included.</p>
+  <div class="sidesep"></div>
+  <div class="sidehdr">Pinned <span class="pincount" id="pincount"></span></div>
+  <div class="pinlist" id="pinlist"></div>
+</aside>
+<main class="main">
+
+<div class="searchwrap">
+  <div class="searchrow">
+    <div class="inputwrap">
+      <input id="search" type="text" placeholder="Search by name, short name, or id&hellip;  (e.g. m4a1)"
+             autocomplete="off" spellcheck="false" disabled>
+      <span id="loadstate">loading&hellip;</span>
+    </div>
+    <button id="clearbtn" class="clearbtn" type="button" title="Clear search" disabled>Clear</button>
+  </div>
+  <div id="drop"></div>
+</div>
+
+<div id="detail" class="detail" hidden></div>
+<div id="hint" class="hint">
+  Start typing above to search. Pick a result to see its raw item JSON alongside its
+  <code>locale</code> (Name / ShortName / Description) and <code>handbook</code> (ParentId / Price) entries.
+</div>
+
+</main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var INDEX = [];              // [{id,n,s,t,p}, ...] every db entry (items + nodes)
+  var BY_ID = {};              // id -> entry, for breadcrumb walking
+  var ITEMS = [];              // just the searchable "Item"-typed entries
+  var MAX_RESULTS = 50;
+
+  var searchEl = document.getElementById("search");
+  var clearBtn = document.getElementById("clearbtn");
+  var dropEl = document.getElementById("drop");
+  var detailEl = document.getElementById("detail");
+  var hintEl = document.getElementById("hint");
+  var loadEl = document.getElementById("loadstate");
+  var toastEl = document.getElementById("toast");
+  var activeIdx = -1;         // highlighted dropdown row (keyboard nav)
+  var current = [];           // current dropdown result set
+  var pinListEl = document.getElementById("pinlist");
+  var pinCountEl = document.getElementById("pincount");
+
+  // ---- pinned items (client-only) ----
+  // A user-curated shortlist kept in the browser's localStorage (never sent to the server). Each entry
+  // is just an item id; names/short-names are resolved from the loaded index at render time, so a pin
+  // survives even if the index hasn't loaded yet (it renders as the bare id until it has).
+  var PIN_KEY = "leaves_pinned_items";
+  var PINS = loadPins();
+
+  function loadPins() {
+    try { var v = JSON.parse(localStorage.getItem(PIN_KEY)); return Array.isArray(v) ? v : []; }
+    catch (e) { return []; }
+  }
+  function savePins() { try { localStorage.setItem(PIN_KEY, JSON.stringify(PINS)); } catch (e) {} }
+  function isPinned(id) { return PINS.indexOf(id) !== -1; }
+  function togglePin(id) {
+    var i = PINS.indexOf(id);
+    if (i === -1) { PINS.push(id); } else { PINS.splice(i, 1); }
+    savePins();
+    renderPins();
+    syncPinButtons(id);
+  }
+
+  // A star toggle for one id: filled amber (★) when pinned, hollow (☆) otherwise. Only ever emitted for
+  // ids we can actually name (a real item), so it never appears on unnameable MongoIds in the tree.
+  function pinBtn(id) {
+    var on = isPinned(id);
+    return '<button type="button" class="pinbtn' + (on ? " on" : "") + '" data-pin="' + escapeAttr(id) +
+      '" title="' + (on ? "Unpin" : "Pin") + ' this item">' + (on ? "★" : "☆") + '</button>';
+  }
+  // Reflect a pin change onto every button for that id already on the page (the top chip + any tree
+  // lines) in place, so we don't re-render the tree and lose the user's expand/collapse state.
+  function syncPinButtons(id) {
+    var on = isPinned(id);
+    var btns = document.querySelectorAll(".pinbtn");
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].getAttribute("data-pin") === id) {
+        btns[i].classList.toggle("on", on);
+        btns[i].textContent = on ? "★" : "☆";
+        btns[i].title = (on ? "Unpin" : "Pin") + " this item";
+      }
+    }
+  }
+  // The sidebar list. Each row opens the item on click; the × unpins it. The row for the item currently
+  // shown (matched via the url hash) is highlighted.
+  function renderPins() {
+    if (pinCountEl) { pinCountEl.textContent = PINS.length ? String(PINS.length) : ""; }
+    if (!PINS.length) {
+      pinListEl.innerHTML = '<div class="pinempty">No pinned items yet. Use the ' + "☆" +
+        ' next to an item id — at the top of a result, or on any id in the JSON view.</div>';
+      return;
+    }
+    var curId = location.hash.length > 1 ? decodeURIComponent(location.hash.slice(1)) : "";
+    var html = "";
+    for (var i = 0; i < PINS.length; i++) {
+      var id = PINS[i];
+      var e = BY_ID[id];
+      var nm = e ? rttStrip(e.name) : id;
+      var sh = e ? rttStrip(e.short || "") : "";
+      html += '<div class="pinrow' + (id === curId ? " active" : "") + '" data-id="' + escapeAttr(id) + '">' +
+              '<span class="pn" title="' + escapeAttr(nm) + '">' + escapeHtml(nm) + '</span>' +
+              (sh ? '<span class="ps">' + escapeHtml(sh) + '</span>' : '') +
+              '<button type="button" class="unpin" data-unpin="' + escapeAttr(id) + '" title="Unpin">×</button>' +
+              '</div>';
+    }
+    pinListEl.innerHTML = html;
+  }
+
+  pinListEl.addEventListener("click", function (ev) {
+    var un = ev.target.closest(".unpin");
+    if (un) { ev.stopPropagation(); togglePin(un.getAttribute("data-unpin")); return; }
+    var row = ev.target.closest(".pinrow");
+    if (row) { choose(row.getAttribute("data-id")); }
+  });
+
+  renderPins();
+
+  // ---- load the index up front (one small array; the DB is static after server load) ----
+  fetch("/webui/db/index", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      INDEX = data;
+      for (var i = 0; i < INDEX.length; i++) {
+        var e = INDEX[i];
+        BY_ID[e.id] = e;
+        if (e.type === "Item") { ITEMS.push(e); }
+      }
+      loadEl.textContent = ITEMS.length.toLocaleString() + " items";
+      renderPins();   // now that names resolve, re-render any pins that loaded as bare ids
+      searchEl.disabled = false;
+      updateSearchChrome();
+      searchEl.focus();
+      // Deep links. Two forms, checked in priority order:
+      //   ?q=<text>  - a search query (e.g. a "hand over X" item link from the questrandomizer page):
+      //                run the search, and if EXACTLY one item matches open it straight away; otherwise
+      //                just drop the box open on the results so the user picks.
+      //   #<id>      - a direct item id, opened immediately.
+      var q = new URLSearchParams(location.search).get("q");
+      if (q) {
+        searchEl.value = q;
+        updateSearchChrome();
+        var res = search(q);
+        if (res.length === 1) { choose(res[0].id); }
+        else { renderDrop(res); }
+      } else if (location.hash.length > 1) {
+        loadItem(decodeURIComponent(location.hash.slice(1)));
+      }
+    })
+    .catch(function () { loadEl.textContent = "index failed to load"; });
+
+  // ---- search ----
+  function search(q) {
+    var raw = q.trim();
+    if (!raw) { return []; }
+    // Operator query (& / |): match as a flat boolean across name, short name and id, in DB order.
+    // The starts-with ranking below only makes sense for a single plain term, so we skip it here.
+    if (raw.indexOf("&") !== -1 || raw.indexOf("|") !== -1) {
+      var hits = [];
+      for (var k = 0; k < ITEMS.length && hits.length < MAX_RESULTS; k++) {
+        var it = ITEMS[k];
+        var hay = it.name + " " + (it.short || "") + " " + it.id;
+        if (window.LeavesSearch.test(hay, raw)) { hits.push(it); }
+      }
+      return hits;
+    }
+    q = raw.toLowerCase();
+    var starts = [], contains = [];
+    for (var i = 0; i < ITEMS.length; i++) {
+      var e = ITEMS[i];
+      var n = e.name.toLowerCase(), s = (e.short || "").toLowerCase(), id = e.id.toLowerCase();
+      if (n.indexOf(q) === 0 || s.indexOf(q) === 0 || id === q) {
+        starts.push(e);
+      } else if (n.indexOf(q) !== -1 || s.indexOf(q) !== -1 || id.indexOf(q) !== -1) {
+        contains.push(e);
+      }
+      if (starts.length >= MAX_RESULTS) { break; }
+    }
+    var out = starts;
+    for (var j = 0; j < contains.length && out.length < MAX_RESULTS; j++) {
+      out.push(contains[j]);
+    }
+    return out;
+  }
+
+  function renderDrop(results) {
+    current = results;
+    activeIdx = -1;
+    if (!searchEl.value.trim()) { dropEl.classList.remove("open"); dropEl.innerHTML = ""; return; }
+    if (results.length === 0) {
+      dropEl.innerHTML = '<div class="dropempty">No items match.</div>';
+      dropEl.classList.add("open");
+      return;
+    }
+    var html = "";
+    for (var i = 0; i < results.length; i++) {
+      var e = results[i];
+      html += '<div class="dropitem" data-id="' + escapeAttr(e.id) + '">' +
+              '<span class="dn">' + escapeHtml(rttStrip(e.name)) + '</span>' +
+              '<span class="ds">' + escapeHtml(rttStrip(e.short || "")) + '</span></div>';
+    }
+    dropEl.innerHTML = html;
+    dropEl.classList.add("open");
+  }
+
+  searchEl.addEventListener("input", function () {
+    renderDrop(search(searchEl.value));
+    updateSearchChrome();
+  });
+
+  clearBtn.addEventListener("click", function () {
+    searchEl.value = "";
+    dropEl.classList.remove("open");
+    dropEl.innerHTML = "";
+    updateSearchChrome();
+    searchEl.focus();
+  });
+
+  // Clear is only meaningful with text in the box; the item count sits at the field's right edge but
+  // hides once you type so it never sits under your text.
+  function updateSearchChrome() {
+    var hasText = searchEl.value.length > 0;
+    clearBtn.disabled = !hasText;
+    loadEl.style.visibility = hasText ? "hidden" : "visible";
+  }
+
+  searchEl.addEventListener("keydown", function (ev) {
+    var rows = dropEl.querySelectorAll(".dropitem");
+    if (ev.key === "ArrowDown") { ev.preventDefault(); move(1, rows); }
+    else if (ev.key === "ArrowUp") { ev.preventDefault(); move(-1, rows); }
+    else if (ev.key === "Enter") {
+      ev.preventDefault();
+      var pick = activeIdx >= 0 ? current[activeIdx] : current[0];
+      if (pick) { choose(pick.id); }
+    } else if (ev.key === "Escape") { dropEl.classList.remove("open"); }
+  });
+
+  function move(delta, rows) {
+    if (!rows.length) { return; }
+    if (activeIdx >= 0 && rows[activeIdx]) { rows[activeIdx].classList.remove("active"); }
+    activeIdx = (activeIdx + delta + rows.length) % rows.length;
+    rows[activeIdx].classList.add("active");
+    rows[activeIdx].scrollIntoView({ block: "nearest" });
+  }
+
+  dropEl.addEventListener("click", function (ev) {
+    var row = ev.target.closest(".dropitem");
+    if (row) { choose(row.getAttribute("data-id")); }
+  });
+
+  document.addEventListener("click", function (ev) {
+    if (!ev.target.closest(".searchwrap")) { dropEl.classList.remove("open"); }
+  });
+
+  function choose(id) {
+    dropEl.classList.remove("open");
+    searchEl.value = BY_ID[id] ? rttStrip(BY_ID[id].name) : id;
+    updateSearchChrome();
+    location.hash = encodeURIComponent(id);
+    loadItem(id);
+  }
+
+  // ---- detail ----
+  function loadItem(id) {
+    fetch("/webui/db/item/" + encodeURIComponent(id), { cache: "no-store" })
+      .then(function (r) { if (!r.ok) { throw new Error("not found"); } return r.json(); })
+      .then(function (d) { renderDetail(id, d); })
+      .catch(function () { renderError(id); });
+  }
+
+  function renderError(id) {
+    hintEl.hidden = true;
+    detailEl.hidden = false;
+    detailEl.innerHTML = '<p class="dsub">No item found for id <b>' + escapeHtml(id) + '</b>.</p>';
+  }
+
+  function renderDetail(id, d) {
+    hintEl.hidden = true;
+    detailEl.hidden = false;
+
+    var loc = d.locale || {};
+    var hb = d.handbook || null;
+    var entry = BY_ID[id] || {};
+    var name = loc.Name || entry.name || id;
+    var short = loc.ShortName || "";
+    var typeName = (d.item && d.item._name) || "";
+
+    var sub = [];
+    if (short) { sub.push(escapeHtml(rttStrip(short))); }
+    if (typeName) { sub.push(escapeHtml(typeName)); }
+    if (hb && typeof hb.Price === "number") {
+      sub.push('handbook <span class="price">' + hb.Price.toLocaleString() + ' ₽</span>');
+    }
+
+    var html = "";
+    html += '<div class="crumbs">' + breadcrumb(id, name) + '</div>';
+    html += '<div class="dhead">';
+    html += '<h1 class="dtitle">' + rttToHtml(name) + '</h1>';
+    html += '<span class="spacer"></span>';
+    // tarkov.dev only lists vanilla items, so link out only when the server says this item is vanilla;
+    // a modded item gets an inert "modded" marker instead. The slug is derived from the full name, the
+    // same rule tarkov.dev uses ("6B2 body armor (Flora)" -> "6b2-body-armor-flora").
+    if (d.modded) {
+      html += '<span class="chip modded" title="Added by a mod - not on tarkov.dev">modded</span>';
+    } else {
+      // Weapons link to their "-default" preset page (the bare-receiver page has no attachments).
+      var slug = slugify(rttStrip(name));
+      if (isWeapon(id)) { slug += "-default"; }
+      var tdevUrl = "https://tarkov.dev/item/" + slug;
+      html += '<a class="chip" href="' + escapeAttr(tdevUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+              'title="Open on tarkov.dev">tarkov.dev ↗</a>';
+    }
+    // Pin star BEFORE the id chip so the chip stays flush to the right edge (aligned with the rest of
+    // the header), and outside the chip so clicking it doesn't trigger the chip's copy-id handler.
+    html += pinBtn(id);
+    html += '<span class="chip" id="idchip" title="Click to copy id">' + escapeHtml(id) + '</span>';
+    html += '</div>';
+    if (sub.length) { html += '<p class="dsub">' + sub.join(" &middot; ") + '</p>'; }
+    if (loc.Description) { html += '<div class="ddesc">' + rttToHtml(loc.Description) + '</div>'; }
+    html += '<div class="dtoolbar">';
+    html += '<button class="copy" id="expandall">Expand all</button>';
+    html += '<button class="copy" id="collapseall">Collapse all</button>';
+    html += '<span class="tspacer"></span>';
+    html += '<button class="copy" id="copyjson">Copy JSON</button>';
+    html += '<button class="copy" id="copyjsonc">Copy JSONC</button>';
+    html += '</div>';
+    html += '<div class="tree" id="tree"></div>';
+    detailEl.innerHTML = html;
+
+    document.getElementById("tree").appendChild(node(null, d, 0));
+
+    document.getElementById("idchip").addEventListener("click", function () {
+      copy(id, "Copied id");
+    });
+    document.getElementById("expandall").addEventListener("click", function () {
+      setAllOpen(true);
+    });
+    document.getElementById("collapseall").addEventListener("click", function () {
+      setAllOpen(false);
+    });
+    document.getElementById("copyjson").addEventListener("click", function () {
+      copy(JSON.stringify(d, null, 2), "Copied JSON");
+    });
+    document.getElementById("copyjsonc").addEventListener("click", function () {
+      copy(toJsonc(d), "Copied JSONC");
+    });
+    renderPins();   // refresh the sidebar so the row for this item highlights as active
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Item > CompoundItem > Weapon > ... > this item. Walks the parent-id chain via the index.
+  function breadcrumb(id, name) {
+    var chain = [];
+    var p = BY_ID[id] ? BY_ID[id].parent : "";
+    var guard = 0;
+    while (p && BY_ID[p] && guard < 30) {
+      chain.unshift(BY_ID[p]);
+      p = BY_ID[p].parent;
+      guard++;
+    }
+    var out = "";
+    for (var i = 0; i < chain.length; i++) {
+      out += '<span class="jlink" data-jump="' + escapeAttr(chain[i].id) + '">' + escapeHtml(rttStrip(chain[i].name)) + '</span>';
+      out += '<span class="sep">&rsaquo;</span>';
+    }
+    out += '<span class="cur">' + escapeHtml(rttStrip(name)) + '</span>';
+    return out;
+  }
+
+  // Jump when a breadcrumb / id link is clicked (delegated - the crumbs are re-rendered each load).
+  detailEl.addEventListener("click", function (ev) {
+    // Pin star anywhere in the detail (top chip or a tree line). preventDefault stops a star inside a
+    // <summary> from also toggling that node open/closed; stopPropagation keeps the top star off the
+    // id-chip's copy handler.
+    var pb = ev.target.closest(".pinbtn");
+    if (pb) { ev.preventDefault(); ev.stopPropagation(); togglePin(pb.getAttribute("data-pin")); return; }
+    var jl = ev.target.closest(".jlink");
+    if (jl && jl.getAttribute("data-jump")) { choose(jl.getAttribute("data-jump")); }
+  });
+
+  // ---- collapsible JSON tree ----
+  // Client-side twin of LeavesUtils' JsonIdAnnotator: any id-shaped string we can name from the loaded
+  // index gets a muted "// what it is" comment, so raw MongoIds in _Filter/_parent/id-keyed maps read
+  // as the items they point at. Returns the annotation html for an id, or "" for anything unnameable.
+  function idName(s) {
+    if (s === undefined || s === null || s === "") { return ""; }
+    var e = BY_ID[s];
+    return (e && e.name) ? rttStrip(e.name) : "";
+  }
+  function idComment(s) {
+    var n = idName(s);
+    return n ? '<span class="jcmt">// ' + escapeHtml(n) + '</span>' : "";
+  }
+
+  // The Copy-JSONC twin of the tree annotation: serialize to pretty JSON, then append "// name" to any
+  // line whose trailing value or leading key is a nameable id - the exact line rules JsonIdAnnotator
+  // uses server-side, so what you paste into an editor matches what the tree shows. Comments are valid
+  // JSONC (SPT's loader skips them), so the result round-trips.
+  function toJsonc(d) {
+    var lines = JSON.stringify(d, null, 2).split("\n");
+    var trailingValue = /"([^"\\]+)"(?:,?)\s*$/;   // a quoted value ending the line (property / element)
+    var leadingKey = /^\s*"([^"\\]+)"\s*:/;         // a quoted key starting the line (id-keyed map)
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var mv = trailingValue.exec(line);
+      var name = mv ? idName(mv[1]) : "";           // value first - the more specific thing on the line
+      if (!name) {
+        var mk = leadingKey.exec(line);
+        if (mk) { name = idName(mk[1]); }
+      }
+      out.push(name ? (line + "  // " + name) : line);
+    }
+    return out.join("\n");
+  }
+
+  // Expand every <details>, or restore each to its default open-state (see node()). "Collapse" means
+  // "back to the view you landed on", not a fully-closed tree - that's what's actually useful.
+  function setAllOpen(expand) {
+    var ds = document.querySelectorAll("#tree details.jobj");
+    for (var i = 0; i < ds.length; i++) {
+      ds[i].open = expand ? true : (ds[i].dataset.defopen === "1");
+    }
+  }
+
+  // Renders one node. Objects/arrays become <details>; primitives a single line. Open by default near
+  // the top of the tree but collapsed for deep or large objects (e.g. _props' ~160 keys).
+  function node(key, value, depth) {
+    if (value === null) { return leaf(key, "null", "jnull"); }
+    var t = typeof value;
+    if (t === "string") { return leaf(key, JSON.stringify(value), "jstr", value); }
+    if (t === "number") { return leaf(key, String(value), "jnum"); }
+    if (t === "boolean") { return leaf(key, String(value), "jbool"); }
+    if (t !== "object") { return leaf(key, String(value), ""); }
+
+    var isArr = Array.isArray(value);
+    var keys = isArr ? null : Object.keys(value);
+    var count = isArr ? value.length : keys.length;
+
+    var det = document.createElement("details");
+    det.className = "jobj";
+    // The default view: open near the top, collapsed for deep or large objects (e.g. _props' ~160
+    // keys). Remembered on the element so "Collapse all" can restore exactly this, not a bare tree.
+    var defOpen = (depth <= 1 && count <= 40);
+    det.dataset.defopen = defOpen ? "1" : "0";
+    if (defOpen) { det.open = true; }
+
+    var sum = document.createElement("summary");
+    var label = key === null ? "" : '<span class="jkey">' + escapeHtml(key) + ':</span> ';
+    var meta = isArr ? ("[…] " + count + " item" + (count === 1 ? "" : "s"))
+                     : ("{…} " + count + " key" + (count === 1 ? "" : "s"));
+    // A nameable id-shaped key (an id-keyed map entry, e.g. a slot _props keyed by item id) is pinnable
+    // straight from its summary line too.
+    var keyPin = BY_ID[key] ? pinBtn(key) : "";
+    sum.innerHTML = label + '<span class="jmeta">' + meta + '</span>' + idComment(key) + keyPin;
+    det.appendChild(sum);
+
+    if (isArr) {
+      for (var i = 0; i < value.length; i++) { det.appendChild(node(String(i), value[i], depth + 1)); }
+    } else {
+      for (var j = 0; j < keys.length; j++) { det.appendChild(node(keys[j], value[keys[j]], depth + 1)); }
+    }
+    return det;
+  }
+
+  // A single primitive line. rawString (for strings) lets id-like values become jump links.
+  function leaf(key, display, cls, rawString) {
+    var div = document.createElement("div");
+    div.className = "jline";
+    var html = key === null ? "" : '<span class="jkey">' + escapeHtml(key) + ':</span> ';
+    if (rawString !== undefined && BY_ID[rawString] && rawString !== "") {
+      html += '<span class="jlink" data-jump="' + escapeAttr(rawString) + '">' + escapeHtml(display) + '</span>';
+    } else {
+      html += '<span class="' + cls + '">' + escapeHtml(display) + '</span>';
+    }
+    // Value-first, then key - mirrors the annotator: the value is the more specific thing on the line,
+    // and a line only ever carries one comment. Key annotation covers id-keyed maps (id -> count).
+    html += idComment(rawString) || idComment(key);
+    // A pin star for whichever id this line references (value first, else an id-shaped key), same
+    // value-first rule as the comment - so any TPL id in the JSON can be pinned straight from the tree.
+    var pinId = (rawString !== undefined && BY_ID[rawString]) ? rawString : (BY_ID[key] ? key : "");
+    if (pinId) { html += pinBtn(pinId); }
+    div.innerHTML = html;
+    return div;
+  }
+
+  // ---- misc ----
+  function copy(text, msg) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast(msg); });
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); toast(msg); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 1400);
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  // tarkov.dev item slug. Its rule keeps EXISTING hyphens as word separators but DROPS other punctuation
+  // outright rather than turning it into a hyphen - so "SIG MCX-SPEAR 6.8x51 assault rifle" becomes
+  // "sig-mcx-spear-68x51-assault-rifle" (the "." in 6.8 vanishes, the "-" in MCX-SPEAR stays). So: strip
+  // everything that isn't a letter, digit, whitespace or hyphen; then collapse whitespace runs to a single
+  // hyphen and squeeze repeated hyphens.
+  function slugify(s) {
+    return String(s).toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, "")   // drop punctuation (incl. the dot in a caliber) with NO hyphen
+      .trim()
+      .replace(/\s+/g, "-")            // spaces between words -> hyphen
+      .replace(/-+/g, "-")            // squeeze any doubled hyphens
+      .replace(/^-+|-+$/g, "");
+  }
+
+  // Is this id a weapon? Walk its parent-node chain (via the loaded index) up to the base "Weapon" class.
+  // Weapons on tarkov.dev live at "<slug>-default" - the base slug is the bare receiver with no
+  // attachments, so the default preset is the more useful page to open.
+  var WEAPON_BASE_ID = "5422acb9af1c889c16000029";
+  function isWeapon(id) {
+    var p = BY_ID[id] ? BY_ID[id].parent : "";
+    var guard = 0;
+    while (p && BY_ID[p] && guard < 30) {
+      if (p === WEAPON_BASE_ID) { return true; }
+      p = BY_ID[p].parent;
+      guard++;
+    }
+    return false;
+  }
+
+  // EFT/Unity rich-text ("RTT") tags — the canonical impl now lives in rail.js (window.LeavesRTT),
+  // shared with the config editor's id picker. These stay as thin wrappers so this page's many call
+  // sites are untouched; a passthrough covers the (shouldn't-happen) case of the rail not loading.
+  function rttToHtml(raw) {
+    if (window.LeavesRTT) { return window.LeavesRTT.toHtml(raw); }
+    return escapeHtml(String(raw == null ? "" : raw));
+  }
+  function rttStrip(raw) {
+    if (window.LeavesRTT) { return window.LeavesRTT.strip(raw); }
+    return String(raw == null ? "" : raw).replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+  }
+})();
+</script>
+</body>
+</html>

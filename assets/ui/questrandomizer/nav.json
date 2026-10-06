@@ -1,0 +1,15 @@
+{
+  "label": "Quest Randomizer",
+  "icon": "🔀",
+  "home": "/questrandomizer/ui#search",
+  "children": [
+    { "label": "Search",     "icon": "🔍", "href": "/questrandomizer/ui#search"   },
+    { "label": "Re-roll",    "icon": "🎲", "href": "/questrandomizer/ui#reroll"   },
+    { "label": "Handbook",   "icon": "📖", "href": "/questrandomizer/ui/handbook" },
+    { "label": "Req. Items", "icon": "📋", "href": "/questrandomizer/ui/info"     },
+    { "label": "History",    "icon": "📜", "href": "/questrandomizer/ui#history"  }
+  ],
+  "devTools": [
+    { "label": "QR · Debug / Dump", "icon": "🐞", "href": "/questrandomizer/ui/debug" }
+  ]
+}

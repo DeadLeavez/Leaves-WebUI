@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barter Economy — Search</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Optional cross-mod nav rail (LeavesUtils). Also publishes window.LeavesSearch + Ctrl+F/Esc. -->
+<script defer src="/webui/rail.js"></script>
+<style>
+  body { padding: 0; }
+
+  .layout { display: flex; align-items: stretch; min-height: 100vh; }
+  .side {
+    width: 220px; flex: none; box-sizing: border-box; background: var(--panel);
+    border-right: 1px solid var(--border-dim); padding: 18px 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .side h1 { font-size: 17px; margin: 0 0 6px; color: var(--gold-dim); font-weight: 650; }
+  .sidesep { height: 1px; background: var(--border-dim); margin: 4px 0; }
+  .navbtn {
+    display: block; width: 100%; box-sizing: border-box; text-align: left; cursor: pointer;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px; text-decoration: none;
+  }
+  .navbtn:hover { border-color: var(--border-hover); color: var(--link-hover); }
+  .navbtn.active { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+  .sidenote { margin-top: auto; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+
+  .main { flex: 1; min-width: 0; box-sizing: border-box; padding: 20px 22px; }
+  @media (max-width: 760px) {
+    .layout { flex-direction: column; }
+    .side { width: auto; border-right: none; border-bottom: 1px solid var(--border-dim); }
+  }
+
+  .bar { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  input[type=text] {
+    flex: 1; min-width: 220px; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 14px;
+  }
+  .toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); cursor: pointer; user-select: none; white-space: nowrap; }
+  .toggle input { width: 15px; height: 15px; }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  /* Loyalty filter dropdown. */
+  .dropdown { position: relative; }
+  .ddbtn { background: var(--surface); color: var(--text-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .ddbtn:hover { border-color: var(--border-hover); }
+  .ddpanel { display: none; position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; min-width: 130px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+  .dropdown.open .ddpanel { display: block; }
+  .ddpanel label { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 13px; color: var(--text); cursor: pointer; border-radius: 5px; }
+  .ddpanel label:hover { background: var(--surface-2); }
+  .ddpanel input { width: 15px; height: 15px; }
+  .ddsep { height: 1px; background: var(--border-dim); margin: 4px 2px; }
+  .ddall { font-size: 12px; color: var(--link); cursor: pointer; padding: 4px 8px; display: inline-block; }
+  .ddall:hover { color: var(--link-hover); }
+
+  /* Chain steps. */
+  .step { margin-bottom: 16px; }
+  .step.item { border-left: 2px solid var(--accent); padding-left: 12px; margin-left: 2px; }
+  .step-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 14px; font-weight: 650; color: var(--gold-dim); }
+  .step-head .chainicon { color: var(--accent); }
+  .step-head b { color: var(--text); }
+  .step-head .scnt { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .chain-remove { margin-left: auto; cursor: pointer; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 7px; font-size: 12px; }
+  .chain-remove:hover { color: var(--red); border-color: var(--red); }
+  .step-hint { color: var(--muted); font-size: 12px; padding: 2px 0; }
+
+  /* Results: one section per trader. */
+  .gtrader { margin-bottom: 12px; }
+  .gtrader-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 14px; font-weight: 650; color: var(--gold-dim); }
+  .gtrader-head img { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; background: var(--surface); }
+  .gtrader-head .cnt { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .gbody { padding-left: 8px; }
+
+  /* One trade (shared row shape). */
+  .trade { display: flex; align-items: baseline; gap: 10px; padding: 5px 6px; border-radius: 6px; border-bottom: 1px solid var(--border-dim); }
+  .trade:last-child { border-bottom: none; }
+  .sold { flex: 0 0 40%; min-width: 0; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .sname { color: var(--text); font-size: 13px; }
+  .sshort { color: var(--muted); font-size: 11px; }
+  .crumb { color: var(--muted); font-size: 11px; margin-right: 6px; white-space: nowrap; }
+  .arrow { color: var(--muted); flex: 0 0 auto; }
+  .pay { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); }
+  .part { white-space: nowrap; }
+  .part + .part::before { content: "·"; color: var(--muted); margin: 0 6px; }
+  .part.cur { color: var(--gold); }
+  /* Non-currency payment is clickable here to extend the barter chain (and its title shows the full name). */
+  .part-item { cursor: pointer; text-decoration: underline dotted var(--border-hover); text-underline-offset: 2px; }
+  .part-item:hover { color: var(--link-hover); text-decoration-color: var(--link-hover); }
+  /* Currency parts aren't clickable but still reveal their full name on hover - a dotted underline +
+     help cursor signals that. */
+  .part.cur { cursor: help; text-decoration: underline dotted var(--border-dim); text-underline-offset: 2px; }
+  .part.cur:hover { text-decoration-color: var(--border-hover); }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); }
+  .tag.cash { color: var(--muted); }
+  .tag.barter { color: var(--green); border-color: var(--green); }
+  .ll { flex: 0 0 auto; display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 6px; width: 92px; white-space: nowrap; font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--gold); }
+  .ll .lbl { flex: 0 0 auto; }
+  .ll .stars { flex: 0 0 auto; width: 54px; text-align: left; letter-spacing: 1px; }
+
+  /* Stock badge: the trader's configured stock (DB assort), right-aligned before loyalty. */
+  .stock { flex: 0 0 auto; width: 64px; text-align: right; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+  .stock.inf { color: var(--gold); }
+  .stock.out { color: var(--red); }
+
+  /* Pin toggle: dim + greyed when off, full colour when the barter is pinned. */
+  .pin { flex: 0 0 auto; background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 5px; opacity: .3; filter: grayscale(1); }
+  .pin:hover { opacity: .85; background: var(--surface-2); }
+  .pin.on { opacity: 1; filter: none; }
+
+  .status { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .status.err { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>🤝 Barter Economy</h1>
+    <div class="sidesep"></div>
+    <a class="navbtn" href="/bartereconomy/ui">⏱️ Timers</a>
+    <a class="navbtn" href="/bartereconomy/ui/trades">💱 Trades</a>
+    <a class="navbtn active" href="/bartereconomy/ui/search">🔍 Search</a>
+    <a class="navbtn" href="/bartereconomy/ui/tiers">📊 Tier list</a>
+    <a class="navbtn" href="/bartereconomy/ui/pinned">📌 Pinned</a>
+    <div class="sidenote">Search trades across <b>all</b> traders. Then <b>click any payment item</b> to chain — it looks up who sells that item, stacking a new step below while keeping the ones above. Follow a barter back to what you already have.</div>
+  </aside>
+  <main class="main">
+    <div class="bar">
+      <input type="text" id="q" placeholder="Search all traders' trades…" autocomplete="off" autofocus>
+      <label class="toggle"><input type="checkbox" id="hideMoney"> Hide money trades</label>
+      <label class="toggle" title="Hide trades whose configured stock is 0. Unlimited-stock trades are never hidden."><input type="checkbox" id="hideOOS"> Hide out of stock</label>
+      <div class="dropdown" id="llDrop">
+        <button type="button" class="ddbtn" id="llBtn">Loyalty: all ▾</button>
+        <div class="ddpanel">
+          <label><input type="checkbox" class="llcb" data-ll="1"> LL1</label>
+          <label><input type="checkbox" class="llcb" data-ll="2"> LL2</label>
+          <label><input type="checkbox" class="llcb" data-ll="3"> LL3</label>
+          <label><input type="checkbox" class="llcb" data-ll="4"> LL4</label>
+          <div class="ddsep"></div>
+          <span class="ddall" id="llAll">All</span>
+        </div>
+      </div>
+    </div>
+    <div id="content"><div class="hint">Type to search trades across all traders, then click a payment item to build a barter chain.</div></div>
+    <div class="status" id="status"></div>
+  </main>
+</div>
+
+<script src="/bartereconomy/ui/common.js"></script>
+<script>
+  "use strict";
+  const $ = s => document.querySelector(s);
+
+  const LS = { hideMoney: "be_trades_hidemoney", loyalty: "be_trades_loyalty", hideOOS: "be_trades_hideoos" };
+  let hideMoney = localStorage.getItem(LS.hideMoney) === "1";
+  let hideOutOfStock = localStorage.getItem(LS.hideOOS) === "1";
+
+  // The barter chain. searchData = the text-search results (the root step). chain = item-acquisition steps,
+  // each { id, name, data|null, error? } where data is the /api/trades/sells report for that item.
+  let searchData = null;
+  let chain = [];
+
+  const loyalty = new Set(
+    (localStorage.getItem(LS.loyalty) || "1,2,3,4").split(",").map(s => parseInt(s, 10)).filter(n => n >= 1 && n <= 4)
+  );
+  function loyaltyAllowed(ll) { return ll < 1 || loyalty.has(ll); }
+  function saveLoyalty() { localStorage.setItem(LS.loyalty, Array.from(loyalty).sort().join(",")); }
+
+  // Group a results array (with the money + loyalty filters applied) into per-trader sections.
+  function groupHtml(results) {
+    const byTrader = new Map();
+    let shown = 0;
+    for (const r of results) {
+      if (hideMoney && r.trade.cash && r.traderId !== REF_ID) continue;
+      if (hideOutOfStock && !r.trade.unlimited && Math.floor(r.trade.stock || 0) <= 0) continue;
+      if (!loyaltyAllowed(r.trade.loyalty || 0)) continue;
+      if (!byTrader.has(r.traderId)) byTrader.set(r.traderId, { nickname: r.traderNickname, avatar: r.traderAvatar, trades: [] });
+      byTrader.get(r.traderId).trades.push(r.trade);
+      shown++;
+    }
+    let html = "";
+    for (const [tid, g] of byTrader) {
+      html += '<div class="gtrader"><div class="gtrader-head">' +
+                (g.avatar ? '<img src="' + escapeHtml(g.avatar) + '" alt="" onerror="this.style.display=\'none\'">' : '') +
+                '<span>' + escapeHtml(g.nickname) + '</span>' +
+                '<span class="cnt">' + g.trades.length + '</span></div>' +
+                '<div class="gbody">' + g.trades.map(t => tradeHtml(t, true, { id: tid, nickname: g.nickname, avatar: g.avatar })).join("") + '</div></div>';
+    }
+    return { html, shown, traders: byTrader.size };
+  }
+
+  function stepSection(idx, isItem, headHtml, bodyHtml) {
+    return '<section class="step' + (isItem ? " item" : "") + '" data-step="' + idx + '">' +
+             '<div class="step-head">' + headHtml + '</div>' + bodyHtml + '</section>';
+  }
+
+  function renderAll() {
+    let html = "";
+
+    // Root step: the text search.
+    if (searchData) {
+      const g = groupHtml(searchData.results);
+      const head = '🔎 <span>Results for <b>' + escapeHtml(searchData.query) + '</b></span>' +
+                   '<span class="scnt">' + g.shown + ' in ' + g.traders + ' traders' +
+                   (searchData.truncated ? ", capped" : "") + '</span>';
+      html += stepSection(0, false, head, g.shown ? g.html : '<div class="step-hint">No matches.</div>');
+    }
+
+    // Chain steps.
+    for (let i = 0; i < chain.length; i++) {
+      const step = chain[i];
+      const nm = escapeHtml(step.name || step.id);
+      let head = '<span class="chainicon">🔗</span> <span>To get <b>' + nm + '</b></span>';
+      let body;
+      if (step.error) {
+        body = '<div class="step-hint" style="color:var(--red)">Lookup failed: ' + escapeHtml(step.error) + '</div>';
+      } else if (!step.data) {
+        body = '<div class="step-hint">Looking up who sells ' + nm + '…</div>';
+      } else {
+        const g = groupHtml(step.data.results);
+        head += '<span class="scnt">' + g.shown + ' in ' + g.traders + ' traders' + (step.data.truncated ? ", capped" : "") + '</span>';
+        body = g.shown
+          ? g.html
+          : '<div class="step-hint">No trade sells ' + nm + ' (only cash, quest reward, or crafted).</div>';
+      }
+      head += '<span class="chain-remove" data-idx="' + i + '" title="Remove this step and below">✕</span>';
+      html += stepSection(i + 1, true, head, body);
+    }
+
+    $("#content").innerHTML = html || '<div class="hint">Type to search trades across all traders, then click a payment item to build a barter chain.</div>';
+
+    const parts = [];
+    if (searchData) parts.push('search: "' + searchData.query + '"');
+    if (chain.length) parts.push(chain.length + " chain step" + (chain.length > 1 ? "s" : ""));
+    $("#status").textContent = parts.join(" · ");
+  }
+
+  // Extend the chain: clicking a payment item in step `fromStep` makes that item the next step, dropping
+  // any steps that were deeper than the one clicked (so the chain stays a single coherent path).
+  async function chainTo(fromStep, id, name) {
+    if (fromStep < chain.length && chain[fromStep] && chain[fromStep].id === id) return; // already showing
+    const step = { id, name, data: null };
+    chain = chain.slice(0, fromStep).concat([step]);
+    renderAll();
+    scrollToLastStep();
+    try {
+      const res = await fetch("/bartereconomy/api/trades/sells?item=" + encodeURIComponent(id), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      step.data = await res.json();
+    } catch (e) {
+      step.error = e.message;
+    }
+    // Only re-render if this step is still in the chain (it wasn't removed / superseded meanwhile).
+    if (chain.indexOf(step) !== -1) { renderAll(); scrollToLastStep(); }
+  }
+
+  function scrollToLastStep() {
+    const steps = document.querySelectorAll("#content .step");
+    if (steps.length) steps[steps.length - 1].scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  $("#content").addEventListener("click", e => {
+    const rm = e.target.closest(".chain-remove");
+    if (rm) { chain = chain.slice(0, parseInt(rm.getAttribute("data-idx"), 10)); renderAll(); return; }
+    const part = e.target.closest(".part-item");
+    if (part && part.getAttribute("data-item")) {
+      const sec = part.closest(".step");
+      const fromStep = sec ? parseInt(sec.getAttribute("data-step"), 10) : 0;
+      chainTo(fromStep, part.getAttribute("data-item"), part.getAttribute("data-name"));
+    }
+  });
+
+  // ---- Text search (root step) ------------------------------------------------------------------
+
+  let searchToken = 0;
+  async function runSearch() {
+    const q = $("#q").value.trim();
+    chain = []; // a new search starts a fresh chain
+    if (!q) {
+      searchData = null;
+      renderAll();
+      return;
+    }
+    const token = ++searchToken;
+    $("#status").textContent = "Searching…";
+    try {
+      const res = await fetch("/bartereconomy/api/trades/search?q=" + encodeURIComponent(q), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      if (token !== searchToken) return; // superseded
+      searchData = data;
+      $("#status").classList.remove("err");
+      renderAll();
+    } catch (e) {
+      $("#status").classList.add("err");
+      $("#status").textContent = "Search failed: " + e.message;
+    }
+  }
+
+  // ---- Loyalty dropdown -------------------------------------------------------------------------
+
+  function updateLoyaltyLabel() {
+    const n = loyalty.size;
+    $("#llBtn").textContent = "Loyalty: " + (n === 4 ? "all" : (n === 0 ? "none" : Array.from(loyalty).sort().map(l => "LL" + l).join(" "))) + " ▾";
+  }
+  function initLoyaltyDropdown() {
+    for (const cb of document.querySelectorAll(".llcb")) {
+      const lvl = parseInt(cb.getAttribute("data-ll"), 10);
+      cb.checked = loyalty.has(lvl);
+      cb.addEventListener("change", () => {
+        if (cb.checked) loyalty.add(lvl); else loyalty.delete(lvl);
+        saveLoyalty(); updateLoyaltyLabel(); renderAll();
+      });
+    }
+    $("#llAll").addEventListener("click", () => {
+      loyalty.clear(); [1, 2, 3, 4].forEach(l => loyalty.add(l));
+      for (const cb of document.querySelectorAll(".llcb")) cb.checked = true;
+      saveLoyalty(); updateLoyaltyLabel(); renderAll();
+    });
+    $("#llBtn").addEventListener("click", e => { e.stopPropagation(); $("#llDrop").classList.toggle("open"); });
+    document.addEventListener("click", e => { if (!$("#llDrop").contains(e.target)) $("#llDrop").classList.remove("open"); });
+    updateLoyaltyLabel();
+  }
+
+  let searchTimer = null;
+  $("#q").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 250); // debounce - the server scans every trade
+  });
+  $("#hideMoney").checked = hideMoney;
+  $("#hideMoney").addEventListener("change", () => {
+    hideMoney = $("#hideMoney").checked;
+    localStorage.setItem(LS.hideMoney, hideMoney ? "1" : "0");
+    renderAll();
+  });
+
+  $("#hideOOS").checked = hideOutOfStock;
+  $("#hideOOS").addEventListener("change", () => {
+    hideOutOfStock = $("#hideOOS").checked;
+    localStorage.setItem(LS.hideOOS, hideOutOfStock ? "1" : "0");
+    renderAll();
+  });
+
+  initLoyaltyDropdown();
+  initPins();
+  $("#q").focus();
+</script>
+</body>
+</html>

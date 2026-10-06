@@ -1,0 +1,837 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questrandomizer</title>
+<link rel="stylesheet" href="/webui/base.css">
+<link rel="stylesheet" href="/questrandomizer/ui/styles.css">
+<!-- Optional cross-mod nav rail (Leaves-WebUI). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>Questrandomizer</h1>
+    <select id="profile"></select>
+    <div class="sidesep"></div>
+    <button class="tab navbtn active" data-tab="search">🔍 Search</button>
+    <button class="tab navbtn" data-tab="reroll">🎲 Re-roll</button>
+    <button class="tab navbtn" data-tab="history">📜 History</button>
+    <div class="sidesep"></div>
+    <div class="sidenote">Before every re-roll / re-play, a backup of the profile and its quest data is saved to:<br><code>\SPT\user\mods\Leaves-Questrandomizer\backups\</code></div>
+  </aside>
+  <main class="main">
+
+  <!-- RE-ROLL -->
+  <div class="pane" id="pane-reroll">
+    <div class="sub">Select accepted quests and re-roll their randomization. Progress on a re-rolled quest is reset. Applies after a client restart.<br>
+      Or use <b>Re-roll locked</b> to refresh every quest you haven't accepted, completed, or failed — handy after a config update. Nothing in progress is touched, no progress is reset.</div>
+    <div class="disclaimer" id="r-disclaimer" hidden>⚠ Admin mode re-rolls quests the config deliberately protects (blacklisted or non-whitelisted vanilla quests). A scripted or fragile quest may become harder to complete or break its flow. Use at your own risk.</div>
+    <div class="bar">
+      <input type="text" id="r-search" placeholder="Search quests…" autocomplete="off">
+      <button id="r-all">Select visible</button>
+      <button id="r-none">Clear</button>
+      <button id="r-go" class="primary">Re-roll selected</button>
+      <button id="r-locked" title="Re-roll every quest you haven't accepted, completed, or failed — re-applies the current config to quests not yet in progress.">Re-roll locked</button>
+      <label class="filtertoggle" title="Also list &amp; re-roll blacklisted / protected quests. At your own risk."><input type="checkbox" id="r-admin"> Admin mode</label>
+      <label class="filtertoggle" title="Show each quest's place in the quest chain — the quests that come before it and the ones it unlocks. Click a name to jump to that quest."><input type="checkbox" id="r-chain"> Quest chains</label>
+      <label class="filtertoggle" title="Hide the Rewards column on every card, so you can browse quests without spoiling what they pay out."><input type="checkbox" id="r-hiderewards"> Hide rewards</label>
+    </div>
+    <div class="list" id="r-list"><div class="row muted">Loading…</div></div>
+    <div class="status" id="r-status"></div>
+  </div>
+
+  <!-- SEARCH -->
+  <div class="pane active" id="pane-search">
+    <div class="sub">Free-text search across every accepted quest — matches the quest name, the trader, and the objective text exactly as YOUR profile rolled it. Read-only; nothing here changes a quest.</div>
+    <div class="bar">
+      <input type="text" id="s-search" placeholder="Search quests &amp; objectives… e.g. &quot;Shoreline&quot;, &quot;kill 5&quot;, &quot;hand over&quot;" autocomplete="off">
+      <select id="s-sort" title="Order the quest cards">
+        <option value="trader">Sort: Quest-giver</option>
+        <option value="name">Sort: Name</option>
+      </select>
+      <label class="filtertoggle" title="Also list quests that have an objective completable on [Any map] (no specific-location requirement), on top of your search matches."><input type="checkbox" id="s-anymap"> Always show any-map</label>
+      <label class="filtertoggle" title="Ignore objectives you've already completed: they're hidden from the list and don't count toward the search or the any-map toggle. A quest whose objectives are all done drops out."><input type="checkbox" id="s-hidedone"> Hide completed objectives</label>
+      <label class="filtertoggle" title="Show only kill objectives (lines starting with Kill / Eliminate). Every other objective is hidden from the list and doesn't count toward the search."><input type="checkbox" id="s-killonly"> Hide non-kill objectives</label>
+      <label class="filtertoggle" title="Hide any quest that has no objectives left to show after the other filters. On by default."><input type="checkbox" id="s-hideempty" checked> Hide quests with no objectives</label>
+      <label class="filtertoggle" title="Show each quest's place in the quest chain — the quests that come before it and the ones it unlocks. Click a name to jump to that quest."><input type="checkbox" id="s-chain"> Quest chains</label>
+      <label class="filtertoggle" title="Hide the Rewards column on every card, so you can browse quests without spoiling what they pay out."><input type="checkbox" id="s-hiderewards"> Hide rewards</label>
+    </div>
+    <!-- Pin tray: a frozen copy of the objective lines you 📌 in the results below.
+         Persisted in localStorage (survives closing the tab); nothing here is written to the profile. -->
+    <div class="pintray" id="s-pins" hidden>
+      <div class="pintray-hd">
+        <button type="button" class="pintray-toggle" id="s-pins-toggle" aria-expanded="true">Pinned (<span id="s-pins-n">0</span>)</button>
+        <button type="button" class="pintray-refresh" id="s-pins-refresh" title="Re-pull quest data and update each pin's progress">Refresh</button>
+        <button type="button" class="pintray-clear" id="s-pins-clear">Clear</button>
+      </div>
+      <ul class="objs pinobjs" id="s-pins-list"></ul>
+    </div>
+    <div class="list" id="s-list"><div class="row muted">Loading…</div></div>
+    <div class="status" id="s-status"></div>
+  </div>
+
+  <!-- HISTORY -->
+  <div class="pane" id="pane-history">
+    <div class="sub">Every re-roll and re-play made through this page, across all accounts. Stored server-side.</div>
+    <div class="bar">
+      <select id="h-player"><option value="">All players</option></select>
+      <select id="h-action"><option value="">All actions</option><option value="reroll">Re-rolls</option><option value="verify">Repairs</option><option value="replay">Re-plays</option></select><!-- "replay" kept: old history entries may still carry action:"replay" -->
+      <input type="text" id="h-search" placeholder="Search quests / players…" autocomplete="off">
+    </div>
+    <div class="list" id="h-list"><div class="row muted">Loading…</div></div>
+    <div class="status" id="h-status"></div>
+  </div>
+  </main>
+</div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const api = p => '/questrandomizer/api/' + p;
+  // Remember the user's selections across sessions (browser localStorage - a tiny per-site key/value
+  // store the browser keeps on disk). Keys are prefixed so they don't collide with the handbook page.
+  const LS = { profile: 'qr_profile', admin: 'qr_admin', anymap: 'qr_anymap', hidedone: 'qr_hidedone', killonly: 'qr_killonly', hideempty: 'qr_hideempty', chain: 'qr_chain', hiderewards: 'qr_hiderewards', sort: 'qr_sort' };
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  // Escape a user string so it's safe inside a RegExp (search boxes take arbitrary text).
+  const rxEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Highlight every match. Escape the text FIRST, then highlight with the equally-escaped needle so
+  // searching for characters like & or < still lines up with the escaped haystack.
+  function hl(text, f) {
+    const e = esc(text || '');
+    // LeavesSearch lives in the DEFERRED rail.js, which runs AFTER this inline script. Nearly every
+    // caller is inside an async fetch callback (rail.js is loaded by then), but renderPins() runs
+    // synchronously at init from restored localStorage - if it fires before rail.js, a bare
+    // LeavesSearch reference throws and aborts the rest of init (profiles never load). Pins always
+    // highlight with an empty filter, so [] here is identical output, not a degradation.
+    const terms = window.LeavesSearch ? LeavesSearch.terms(f) : [];
+    if (!terms.length) return e;
+    const rx = terms.map(t => rxEsc(esc(t))).join('|');
+    return e.replace(new RegExp(rx, 'gi'), m => `<mark>${m}</mark>`);
+  }
+  const TDEV = 'https://tarkov.dev/';
+  // tarkov.dev puts items and maps on DIFFERENT paths (/item/ vs /map/), so unlike a wiki we have to
+  // tell them apart. Maps are a small fixed set, so list them: name THIS MOD emits (lowercase) ->
+  // tarkov.dev's map slug. Anything not in here is treated as an item.
+  // Keys are the DISPLAY names this mod actually prints inside the brackets (see
+  // assets/data/localization/en/base.json) - NOT SPT's internal location ids, which never reach the
+  // text. Note Factory: the mod splits it Day/Night because Tarkov's backend treats them as separate
+  // locations, but tarkov.dev has a single "factory" map, so both collapse to it.
+  const MAP_SLUGS = {
+    'customs': 'customs',
+    'factory': 'factory', 'factory - day': 'factory', 'factory - night': 'factory',
+    'woods': 'woods',
+    'shoreline': 'shoreline',
+    'interchange': 'interchange',
+    'reserve': 'reserve',
+    'lighthouse': 'lighthouse',
+    'streets of tarkov': 'streets-of-tarkov',
+    'ground zero': 'ground-zero',
+    'the lab': 'the-lab', 'labs': 'the-lab',
+    'labyrinth': 'labyrinth'
+  };
+  // tarkov.dev slugs lowercase the name and collapse every run of non-alphanumerics into one hyphen:
+  // "6B2 body armor (Flora)" -> "6b2-body-armor-flora".
+  const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // Items (rewards, hand-overs, any bracketed item label in objective text) link into the Leaves item
+  // browser as a SEARCH for that name: /webui/db?q=<name>. The browser holds every loaded item - modded
+  // ones included - and opens the item straight away when the name matches exactly one, so we never have
+  // to resolve an id on this side. Maps still go to tarkov.dev (the item browser has no maps); categories
+  // go to the handbook (see categoryHref). "any map" isn't an item and never links.
+  const itemSearchHref = name => '/webui/db?q=' + encodeURIComponent(String(name).trim());
+  // Bracketed labels that read like items but aren't - the body parts a kill objective can name, plus the
+  // "[Any map]" tag. These never link: there's no item page for a leg.
+  const NON_ITEM_LABELS = new Set(['any map', 'head', 'thorax', 'stomach', 'left arm', 'right arm', 'left leg', 'right leg']);
+  // An item label -> its item-browser search anchor, or plain highlighted text for a non-item label.
+  function itemLinkHtml(label, f) {
+    if (NON_ITEM_LABELS.has(label.trim().toLowerCase())) return hl(label, f);
+    return `<a href="${esc(itemSearchHref(label))}" target="qr-itembrowser" rel="noopener">${hl(label, f)}</a>`;
+  }
+  // ---- Handbook deep-linking ----
+  // Weapon / mod category names now arrive bracketed in the objective text (e.g. "using [AKs]"), the
+  // same shape as items/maps. We link those to the handbook page instead of tarkov.dev. Names are
+  // fetched once; if the fetch fails the set stays empty and category names just render as plain text.
+  const HANDBOOK = '/questrandomizer/ui/handbook';
+  let weaponCats = new Set(), modCats = new Set(), gearCats = new Set();
+  async function loadHandbookNames() {
+    try {
+      const d = await (await fetch(api('handbook'))).json();
+      weaponCats = new Set(d.weaponCategories.map(c => c.name.toLowerCase()));
+      modCats = new Set(d.modCategories.map(c => c.name.toLowerCase()));
+      gearCats = new Set((d.gearCategories || []).map(c => c.name.toLowerCase()));
+    } catch (e) { /* no handbook -> category names stay plain text */ }
+  }
+  // A bracketed label that IS a category -> a deep link to its handbook card (weapon checked first,
+  // then gear, then mod).
+  function categoryHref(label) {
+    const l = label.toLowerCase();
+    if (weaponCats.has(l)) return `${HANDBOOK}#weapon-${slugify(label)}`;
+    if (gearCats.has(l)) return `${HANDBOOK}#gear-${slugify(label)}`;
+    if (modCats.has(l)) return `${HANDBOOK}#mod-${slugify(label)}`;
+    return null;
+  }
+
+  // Quest NAME rendering: vanilla quests link to their tarkov.dev task page. "(M) ..." names are
+  // this mod's own generated quests (no task page - plain text), and "[REPLAY] ..." copies link to
+  // the ORIGINAL task's page (the copy is a clone of a real quest).
+  function nameHtml(name, f) {
+    const raw = String(name || '');
+    if (raw.startsWith('(M)')) return hl(raw, f);
+    const replay = raw.match(/^(\[REPLAY\]\s*)(.+)$/);
+    const label = replay ? replay[2] : raw;
+    const link = `<a href="${esc(TDEV + 'task/' + slugify(label))}" target="_blank" rel="noopener noreferrer">${hl(label, f)}</a>`;
+    return replay ? hl(replay[1], f) + link : link;
+  }
+  // Turn "[A or B]" into "[<a>A</a> or <a>B</a>]", brackets kept visible, while ALSO applying the
+  // search highlight. Deliberately ONE pass over the string: highlighting is applied only to visible
+  // text, never inside an href, and the only HTML injected is our own <a>/<mark> (everything else
+  // goes through esc() first). Brackets in this text are "choice lists", so the inner text is split
+  // on " or " and each part linked separately - linking the whole bracket would give a dead page.
+  function linkify(text, f) {
+    const raw = String(text || '');
+    let out = '', last = 0, m;
+    const rx = /\[([^\]]*)\]/g;
+    while ((m = rx.exec(raw)) !== null) {
+      out += hl(raw.slice(last, m.index), f);
+      let inner = '';
+      for (const part of m[1].split(/( or )/)) {   // capture group keeps the separators
+        const label = part.trim();
+        if (part === ' or ' || !label) { inner += hl(part, f); continue; }
+        const at = part.indexOf(label);
+        // Category names -> handbook (reuse ONE "qr-handbook" tab); maps -> tarkov.dev in a new tab;
+        // everything else is an item -> the item browser (reuse ONE "qr-itembrowser" tab), which resolves
+        // modded items too.
+        const catHref = categoryHref(label);
+        const mapSlug = MAP_SLUGS[label.toLowerCase()];
+        const body = catHref
+          ? `<a class="cat" href="${esc(catHref)}" target="qr-handbook" rel="noopener">${hl(label, f)}</a>`
+          : mapSlug
+            ? `<a href="${esc(TDEV + 'map/' + mapSlug)}" target="_blank" rel="noopener noreferrer">${hl(label, f)}</a>`
+            : itemLinkHtml(label, f);
+        inner += hl(part.slice(0, at), f) + body + hl(part.slice(at + label.length), f);
+      }
+      out += '[' + inner + ']';
+      last = rx.lastIndex;
+    }
+    return out + hl(raw.slice(last), f);
+  }
+
+  // One quest rendered the same way in every tab: name + trader, then its objectives - as a CLOSED
+  // .grow column, followed by the (optional) quest-chain column, then the trader portrait. The portrait
+  // is LAST so its fixed-width column is always flush to the right edge and every card's face lines up,
+  // whether or not that quest has a chain column. Callers no longer close .grow themselves; they only
+  // close the outer .qrow.
+  function questBody(q, f) {
+    return `<div class="grow"><div class="qname">${nameHtml(q.name, f)} <span class="qtrader">— ${hl(q.trader || '?', f)}</span>`
+      + ` <button type="button" class="descbtn" data-qid="${esc(q.questId)}">＋ description</button></div>`
+      + `<div class="qdesc" hidden></div>`
+      + ((q.objectives && q.objectives.length)
+          ? `<ul class="objs">${q.objectives.map(objectiveHtml.bind(null, f)).join('')}</ul>`
+          : '<div class="rw">(no objective text)</div>')
+      + '</div>'
+      + chainHtml(q, f)
+      + rewardsHtml(q, f)
+      + giverHtml(q);
+  }
+  // The quest-giver column: just the trader's portrait (same-origin path, like the quest icon), in the
+  // slot the maps list used to occupy. The name stays on the title line; the face is here so the eye can
+  // group a trader's quests at a glance - the Search tab also defaults to sorting by quest-giver. No
+  // avatar -> nothing, so the layout still holds. (Maps now live in each objective's text instead.)
+  function giverHtml(q) {
+    if (!q.traderAvatar) return '';
+    const t = esc(q.trader || '');
+    return `<div class="qgiver"><img class="giverpic" src="${esc(q.traderAvatar)}" loading="lazy" alt="${t}" title="${t}"></div>`;
+  }
+  // Reward formatting. The server (ResolveRewards) already did the hard part: duplicate item rewards are
+  // combined into one line with a running total, trader/skill ids are resolved to names, and reward kinds
+  // we don't surface are dropped - so each reward here is just {kind, name, count, value} to format.
+  const fmtNum = n => Math.round(n).toLocaleString('en-US');            // 15000 -> "15,000"
+  const fmtRep = n => (Math.round(n * 100) / 100).toString();          // 0.03  -> "0.03"
+  // One reward as its own stacked line in the rewards column (kept narrow like the chain column, so a
+  // reward list grows DOWN its own column instead of pushing the card taller).
+  function rewardLine(r, f) {
+    if (r.kind === 'item') {
+      // Reward name links into the item browser like item labels in objective text, but keeps its FULL
+      // name (search + tooltip use the full name); the .rwitem class truncates the visible text with an
+      // ellipsis so a long name doesn't blow out the narrow rewards column.
+      const nm = `<a class="rwitem" href="${esc(itemSearchHref(r.name))}" target="qr-itembrowser" rel="noopener" title="${esc(r.name)}">${hl(r.name, f)}</a>`;
+      const mul = r.count > 1 ? ` <span class="rwmul">×${r.count}</span>` : '';
+      return `<div class="rwline rw-item">${nm}${mul}</div>`;
+    }
+    if (r.kind === 'xp') return `<div class="rwline rw-xp">${fmtNum(r.value)} EXP</div>`;
+    if (r.kind === 'rep') return `<div class="rwline rw-rep">${r.value >= 0 ? '+' : ''}${fmtRep(r.value)} ${hl(r.name, f)}</div>`;
+    if (r.kind === 'skill') return `<div class="rwline rw-skill">${r.value >= 0 ? '+' : ''}${fmtNum(r.value)} ${hl(r.name, f)}</div>`;
+    if (r.kind === 'traderUnlock') return `<div class="rwline rw-unlock">Unlocks ${hl(r.name, f)}</div>`;
+    return '';
+  }
+  // The rewards column on the right of a card, beside the chain column - a "Rewards" header over a
+  // vertical list. Empty (no column) when the quest has nothing we surface, or when the "Hide rewards"
+  // spoiler toggle is on.
+  let hideRewards = false;
+  function rewardsHtml(q, f) {
+    if (hideRewards) return '';
+    const rewards = q.rewards || [];
+    if (!rewards.length) return '';
+    return `<div class="qrewards"><div class="chainhdr">Rewards</div>`
+      + rewards.map(r => rewardLine(r, f)).join('')
+      + `</div>`;
+  }
+  // Per-quest description toggle (Re-roll + Search tabs). The description is fetched from the server
+  // ONLY when a quest is first expanded - it's deliberately kept off the bulk quest payload, which would
+  // otherwise ship every active quest's full description to the browser. Fetched text is cached in memory
+  // for the session so re-opening doesn't refetch; nothing here (neither the text nor the open/closed
+  // state) is written to localStorage, so a reload starts every quest collapsed.
+  const descCache = new Map();   // questId -> description HTML ('' when the quest has none)
+  document.addEventListener('click', async e => {
+    const btn = e.target.closest('.descbtn');
+    if (!btn) return;
+    const qid = btn.dataset.qid;
+    const box = btn.closest('.qname').nextElementSibling;   // the .qdesc right after the name line
+    if (!box || !box.classList.contains('qdesc')) return;
+
+    if (!box.hidden) { box.hidden = true; btn.textContent = '＋ description'; return; }
+    btn.textContent = '－ description';
+    box.hidden = false;
+
+    if (descCache.has(qid)) {
+      box.innerHTML = descCache.get(qid) || '<span class="muted">(no description)</span>';
+      return;
+    }
+    box.innerHTML = '<span class="muted">Loading…</span>';
+    try {
+      const r = await fetch(api('quest/description?profileId=' + encodeURIComponent(pid()) + '&questId=' + encodeURIComponent(qid)));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      const text = ((d && d.description) || '').trim();
+      const html = text ? esc(text).replace(/\n/g, '<br>') : '';
+      descCache.set(qid, html);
+      box.innerHTML = html || '<span class="muted">(no description)</span>';
+    } catch (err) {
+      box.innerHTML = `<span class="warn">Failed to load description: ${esc(err.message || err)}</span>`;
+    }
+  });
+  // Optional quest-chain column on the right of a card: Previous (prerequisites) + Leads to (unlocks),
+  // toggled by the "Quest chains" checkbox. Each name jumps the current tab's list to that quest. "—"
+  // for an empty side; nothing at all for a standalone quest, or when the toggle is off.
+  let showChain = false;
+  function chainNames(list, f) {
+    if (!list || !list.length) return '<span class="muted">—</span>';
+    return list.map(n => `<a class="chainlink" data-name="${esc(n.name)}">${hl(n.name, f)}</a>`).join('<br>');
+  }
+  function chainHtml(q, f) {
+    if (!showChain) return '';
+    const prev = q.previous || [], next = q.leadsTo || [];
+    if (!prev.length && !next.length) return '';
+    return `<div class="qchain">`
+      + `<div class="chainhdr">Previous</div><div class="chainbody">${chainNames(prev, f)}</div>`
+      + `<div class="chainhdr">Leads to</div><div class="chainbody">${chainNames(next, f)}</div>`
+      + `</div>`;
+  }
+  // Re-colour the compact mod-requirement markers the locale appends right after the weapon group
+  // bracket: green (R) = the category REQUIRES mods, red (F) = it FORBIDS some. In-game these carry
+  // EFT colour tags, but the server strips all rich text before sending objective text here, so they
+  // arrive as plain "(R)"/"(F)" tokens - always directly after the weapon group's "]". We match only
+  // that position (one or more markers straight after a "]"), so item/map/handbook links, whose hrefs
+  // never contain "](R)"/"](F)", are never touched. Runs AFTER linkify on its HTML output.
+  function colorModMarkers(html) {
+    return html.replace(/\]((?:\(R\)|\(F\))+)/g, (whole, marks) => {
+      const colored = marks.replace(/\(R\)/g, '<span class="modmark req">(R)</span>')
+                           .replace(/\(F\)/g, '<span class="modmark forb">(F)</span>');
+      return ']' + colored;
+    });
+  }
+  // Paint every "found in raid" in the objective text with the animated rainbow gradient (.fir). Runs
+  // on linkify's HTML output, so it must not touch tags or hrefs: we split the html into tag runs
+  // ("<...>") and text runs, and only rewrite the text runs. The phrase only ever occurs as plain
+  // objective text ("Hand over 3 found in raid ..."), never inside an item/map href, so nothing linked
+  // is disturbed. Case-insensitive; the matched casing is preserved.
+  function rainbowFIR(html) {
+    return html.replace(/(<[^>]+>)|([^<]+)/g, (whole, tag, text) => {
+      if (tag) return tag;
+      return text.replace(/found in raid/gi, m => `<span class="fir">${m}</span>`);
+    });
+  }
+  // One objective line. `completed` and `current`/`target` come from the server's ResolveObjectives:
+  // a counter-style task reads "3 / 10" while in progress, and completion follows the live counter.
+  function objectiveHtml(f, o) {
+    const done = !!o.completed;
+    // Only counter-style tasks (target above 1) get a running total; "0 / 1" on a simple
+    // find-this-item objective is noise. A missing counter just means it hasn't started, i.e. 0.
+    const showProgress = !done && o.target != null && o.target > 1;
+    const progress = showProgress ? `<span class="prog">${o.current ?? 0} / ${o.target}</span>` : '';
+    // 📌 toggle - Search tab only (pinMode). Carries a flat copy of this line's fields so the pin tray
+    // can re-render it stand-alone; nothing links the pin back to its quest (see the pin notes below).
+    const pin = pinMode
+      ? `<button type="button" class="pinbtn${pinSet.has(pinKey(o)) ? ' on' : ''}"`
+        + ` title="${pinSet.has(pinKey(o)) ? 'Unpin this objective' : 'Pin this objective'}"`
+        + ` data-otext="${esc(o.text || '')}" data-ocur="${o.current ?? ''}" data-otgt="${o.target ?? ''}" data-odone="${done ? '1' : ''}">📌</button>`
+      : '';
+    return `<li class="${done ? 'done' : ''}">`
+      + (done ? '<span class="tick">✔</span> ' : '')
+      + `<span class="otext">${rainbowFIR(colorModMarkers(linkify(o.text || '', f)))}</span>${progress}${pin}</li>`;
+  }
+  // ---- Objective pins (Search tab) ----
+  // A scratch list. Pinning an objective stores a flat COPY of the line's fields in
+  // localStorage (persists across reloads and tab closes; clear it with the tray's Clear button).
+  // There's deliberately no quest /
+  // objective id kept: instead, pins re-sync their counter to LIVE progress by matching the objective's
+  // text + target (the pinKey) against freshly-fetched quest data - see syncPinsToLive, run on every
+  // search load and by the tray's Refresh button. A pin whose quest was re-rolled (its text changed) no
+  // longer matches and simply keeps its last-known snapshot rather than vanishing. Re-pinning also
+  // refreshes the copy.
+  const LS_PINS = 'qr_pins', LS_PINS_COLLAPSED = 'qr_pins_collapsed';
+  let pinMode = false;         // true only while renderSearch is building (gates the 📌 button)
+  let pinSet = new Set();      // pinKey() of every current pin - refreshed before each render
+  const loadPins = () => { try { return JSON.parse(localStorage.getItem(LS_PINS)) || []; } catch (e) { return []; } };
+  const savePins = a => { try { localStorage.setItem(LS_PINS, JSON.stringify(a)); } catch (e) { /* private mode / quota */ } };
+  // Pin identity = objective text + target. Two lines with identical wording AND target collapse to
+  // one pin, which is harmless for a scratch list.
+  const pinKey = o => (o.text || '') + '' + (o.target ?? '');
+  const refreshPinSet = () => { pinSet = new Set(loadPins().map(pinKey)); };
+  function togglePin(o) {
+    const pins = loadPins();
+    const i = pins.findIndex(p => pinKey(p) === pinKey(o));
+    if (i >= 0) { pins.splice(i, 1); }
+    else { pins.push({ text: o.text || '', current: o.current ?? null, target: o.target ?? null, completed: !!o.completed }); }
+    savePins(pins);
+    renderPins();
+    renderSearch();   // repaint the list so this line's 📌 flips filled / empty
+  }
+  const pinDataFromBtn = b => ({
+    text: b.dataset.otext || '',
+    current: b.dataset.ocur === '' || b.dataset.ocur == null ? null : Number(b.dataset.ocur),
+    target: b.dataset.otgt === '' || b.dataset.otgt == null ? null : Number(b.dataset.otgt),
+    completed: !!b.dataset.odone
+  });
+  // One tray line: the same render as a list objective (links + frozen counter, no search highlight),
+  // a ⤵ that jumps the results below to the live objective, and a filled 📌 that unpins it. Both
+  // buttons carry the pin's text + target so the click handler can rebuild its pinKey.
+  function pinLineHtml(p) {
+    const done = !!p.completed;
+    const showProgress = !done && p.target != null && p.target > 1;
+    const progress = showProgress ? `<span class="prog">${p.current ?? 0} / ${p.target}</span>` : '';
+    const data = ` data-otext="${esc(p.text || '')}" data-otgt="${p.target ?? ''}"`;
+    return `<li class="${done ? 'done' : ''}">`
+      + (done ? '<span class="tick">✔</span> ' : '')
+      + `<span class="otext">${rainbowFIR(colorModMarkers(linkify(p.text || '', '')))}</span>${progress}`
+      + `<button type="button" class="pinjump" title="Jump to this objective in the results below"${data}>⤵</button>`
+      + `<button type="button" class="pinbtn on" title="Unpin this objective"${data}>📌</button></li>`;
+  }
+  function renderPins() {
+    const pins = loadPins();
+    refreshPinSet();
+    $('#s-pins-n').textContent = pins.length;
+    $('#s-pins').hidden = pins.length === 0;
+    $('#s-pins-list').innerHTML = pins.map(pinLineHtml).join('');
+  }
+  // Re-sync every pin's counter to the currently-loaded quest data. Each pin matches the LIVE objective
+  // with the same pinKey (text + target); its current / completed are copied over so the tray reflects
+  // real progress after you've played. First live match wins (two objectives with identical wording
+  // collapse, same as pinKey already does). An unmatched pin - its quest re-rolled, completed, or gone -
+  // keeps its last-known snapshot untouched. target never changes without changing the pinKey, so it's
+  // already in sync. Caller repaints (renderPins) after this.
+  function syncPinsToLive() {
+    const live = new Map();
+    for (const q of searchQuests) {
+      for (const o of (q.objectives || [])) {
+        const k = pinKey(o);
+        if (!live.has(k)) live.set(k, o);
+      }
+    }
+    const pins = loadPins();
+    for (const p of pins) {
+      const o = live.get(pinKey(p));
+      if (!o) continue;
+      p.current = o.current ?? null;
+      p.completed = !!o.completed;
+    }
+    savePins(pins);
+  }
+  // ---- Jump-to-pin ----
+  // Find the live objective <li> in the search results that carries the same pinKey (text + target) as
+  // this pin. Null when it isn't currently rendered - filtered out, or the search box narrowed past it.
+  // The 📌 button on each results line already holds otext/otgt, so we rebuild each line's pinKey from it.
+  function findPinLi(p) {
+    const key = pinKey(p);
+    for (const b of document.querySelectorAll('#s-list .pinbtn')) {
+      if (pinKey(pinDataFromBtn(b)) === key) return b.closest('li');
+    }
+    return null;
+  }
+  // The loaded quest whose objective this pin snapshots (matched by pinKey), else null. Used to surface
+  // the quest by name when the objective isn't currently on screen.
+  function questForPin(p) {
+    const key = pinKey(p);
+    for (const q of searchQuests) {
+      for (const o of (q.objectives || [])) { if (pinKey(o) === key) return q; }
+    }
+    return null;
+  }
+  // The quest card element in the results for a given quest id (via the description button it always
+  // carries) - the fallback jump target when the exact objective line stays filtered out of view.
+  function questCardEl(qid) {
+    const sel = (window.CSS && CSS.escape) ? CSS.escape(qid) : qid;
+    const b = document.querySelector('#s-list .descbtn[data-qid="' + sel + '"]');
+    return b ? b.closest('.qrow') : null;
+  }
+  // Scroll the results down to the objective this pin came from and flash it. If it's currently filtered
+  // out, surface its quest by name first (the same jump the quest-chain links use) and try again; failing
+  // that (a filter toggle still hides the line), fall back to flashing the whole quest card so the jump
+  // never silently does nothing.
+  function jumpToPin(p) {
+    let li = findPinLi(p);
+    const q = li ? null : questForPin(p);
+    if (!li && q) { $('#s-search').value = q.name; renderSearch(); li = findPinLi(p); }
+    const target = li || (q ? questCardEl(q.questId) : null);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Restart the animation if it's already running (re-jumping the same line).
+    target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash');
+  }
+  // Free-text match across name, trader and objective text - identical in all three tabs. Maps ride
+  // along for free now: they're baked into each objective's text (the "[Customs]" suffix), so searching
+  // a map name matches the objective line directly.
+  const questHaystack = q => [(q.name || ''), (q.trader || '')]
+    .concat((q.objectives || []).map(o => (o && o.text) || ''))
+    .join(' ');
+  const matches = (q, f) => LeavesSearch.test(questHaystack(q), f);
+  let active = [];
+
+  const pid = () => $('#profile').value;
+
+  async function loadProfiles() {
+    // Shared LeavesUtils profile feed (filters headless/alt accounts centrally). Rows are { id, nickname, level }.
+    const ps = await (await fetch('/webui/db/profiles')).json();
+    $('#profile').innerHTML = ps.length
+      ? ps.map(p => `<option value="${p.id}">${esc(p.nickname)} (lvl ${p.level})</option>`).join('')
+      : '<option value="">No profiles found</option>';
+    // Reselect the profile from last session if it still exists (else the first one stays selected).
+    const savedProfile = localStorage.getItem(LS.profile);
+    if (savedProfile && ps.some(p => p.id === savedProfile)) $('#profile').value = savedProfile;
+    if (ps.length) { loadActive(); loadSearch(); }
+  }
+
+  // ---- Re-roll ----
+  const adminOn = () => $('#r-admin').checked;
+  async function loadActive() {
+    if (!pid()) return;
+    const url = 'quests/active?profileId=' + encodeURIComponent(pid()) + (adminOn() ? '&admin=true' : '');
+    active = await (await fetch(api(url))).json();
+    renderActive();
+    $('#r-status').textContent = active.length + ' re-rollable quest(s).' + (adminOn() ? ' — admin: all active quests shown.' : '');
+  }
+  // Image FIRST (same vertical line as the other tabs - the checkbox used to sit left of it and
+  // shifted everything a checkbox-width right), then text, then a per-quest Re-roll button, with
+  // the multi-select checkbox at the far right. Clicking anywhere else on the row still toggles it.
+  function renderActive() {
+    pinMode = false;   // no 📌 on the Re-roll tab (questBody / objectiveHtml are shared)
+    const f = $('#r-search').value.toLowerCase().trim();
+    const shown = active.filter(q => matches(q, f));
+    $('#r-list').innerHTML = shown.length
+      ? shown.map(q => `<div class="qrow pick">`
+          + (q.image ? `<div class="qthumb"><img src="${esc(q.image)}" loading="lazy" alt=""></div>` : '')
+          + questBody(q, f)
+          + `<button class="primary" data-reroll="${q.questId}">Re-roll</button>`
+          + `<input type="checkbox" value="${q.questId}">`
+          + '</div>').join('')
+      : '<div class="row muted">No matching quests.</div>';
+  }
+  async function reroll() {
+    const ids = [...document.querySelectorAll('#r-list input:checked')].map(c => c.value);
+    if (!ids.length) { $('#r-status').textContent = 'Select at least one quest first.'; return; }
+    await doReroll(ids);
+  }
+  // Shared by the bulk "Re-roll selected" button and the per-row Re-roll buttons.
+  async function doReroll(ids) {
+    const admin = adminOn();
+    const msg = admin
+      ? 'ADMIN re-roll ' + ids.length + ' quest(s)?\n\nThis can re-roll blacklisted / protected quests and may make a scripted quest harder or break it. Progress will be reset. At your own risk.'
+      : 'Re-roll ' + ids.length + ' quest(s)? Current progress will be reset.';
+    if (!confirm(msg)) return;
+    $('#r-status').textContent = 'Re-rolling…';
+    const res = await (await fetch(api('reroll'), { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ profileId: pid(), questIds: ids, admin }) })).json();
+    if (res.ok) {
+      $('#r-status').innerHTML = '<b>Re-rolled ' + res.rerolled.length + ' quest(s).</b> '
+        + '<span class="warn">RESTART your game client now to load the changes.</span>'
+        + (res.warning ? '<div class="warn">' + esc(res.warning) + '</div>' : '')
+        + (res.backup ? '<div class="rw">Backup saved: ' + esc(res.backup) + '</div>' : '');
+      loadActive();
+      loadHistory();
+    } else { $('#r-status').textContent = 'Error: ' + (res.error || 'unknown'); }
+  }
+  // Bulk refresh of every quest that isn't accepted/completed/failed. No selection, no progress reset
+  // - it's the maintenance button for re-applying config to quests not yet in progress.
+  async function rerollLocked() {
+    if (!pid()) { $('#r-status').textContent = 'Pick a profile first.'; return; }
+    const msg = 'Re-roll ALL locked quests?\n\nThis re-rolls every quest you have NOT accepted, completed, or failed, re-applying the current config. Nothing in progress is touched, no progress is reset, and blacklisted quests are always left alone.\n\nApplies after a client restart.';
+    if (!confirm(msg)) return;
+    $('#r-status').textContent = 'Re-rolling locked quests…';
+    const res = await (await fetch(api('reroll-locked'), { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ profileId: pid() }) })).json();
+    if (!res.ok) { $('#r-status').textContent = 'Error: ' + (res.error || 'unknown'); return; }
+    if ((res.count || 0) === 0) {
+      $('#r-status').textContent = res.message || 'No locked quests to re-roll.';
+      return;
+    }
+    $('#r-status').innerHTML = '<b>Re-rolled ' + res.count + ' locked quest(s).</b> '
+      + '<span class="warn">RESTART your game client now to load the changes.</span>'
+      + (res.warning ? '<div class="warn">' + esc(res.warning) + '</div>' : '')
+      + (res.backup ? '<div class="rw">Backup saved: ' + esc(res.backup) + '</div>' : '');
+    loadHistory();
+  }
+
+  // ---- Search ----
+  let searchQuests = [];
+  async function loadSearch() {
+    if (!pid()) return;
+    searchQuests = await (await fetch(api('quests/search?profileId=' + encodeURIComponent(pid())))).json();
+    renderSearch();
+    // Freshly-loaded quest data: bring any pins up to live progress and repaint the tray.
+    syncPinsToLive();
+    renderPins();
+  }
+  // A quest is "any map" when at least one objective carries the bracketed [Any map] tag - the text
+  // QuestLocaleGeneration emits for an objective with no specific-location requirement.
+  function hasAnyMap(q) {
+    for (const o of (q.objectives || [])) {
+      if (((o && o.text) || '').toLowerCase().includes('[any map]')) return true;
+    }
+    return false;
+  }
+  // A kill objective always leads with "Kill" or "Eliminate" as its first word (e.g. "Kill 5 Scavs on
+  // Woods", "Eliminate 3 PMCs"). Matched on the raw objective text, before it's linkified for display.
+  const KILL_RX = /^\s*(kill|eliminate)\b/i;
+  function isKillObjective(o) {
+    return !!(o && KILL_RX.test(String(o.text || '')));
+  }
+  // A per-quest view for the search tab with completed and/or non-kill objectives optionally stripped
+  // out. Matching, the any-map check and rendering all run against this view, so a filtered-out objective
+  // can neither pull a quest into the results nor show up in it. A shallow copy keeps the original quest
+  // untouched.
+  function searchView(q, hideDone, killOnly) {
+    if (!hideDone && !killOnly) return q;
+    const objs = [];
+    for (const o of (q.objectives || [])) {
+      if (hideDone && o && o.completed) continue;
+      if (killOnly && !isKillObjective(o)) continue;
+      objs.push(o);
+    }
+    return { ...q, objectives: objs };
+  }
+  // Sort key for a quest's name, ignoring the "(M) " procedural and "[REPLAY] " prefixes so those
+  // quests sort by their real title rather than clumping under ( and [.
+  const nameKey = q => String(q.name || '').replace(/^(\(M\)|\[REPLAY\])\s*/i, '').toLowerCase();
+  // Order the visible cards by the chosen key. Name is the tiebreaker so equal keys stay stable and
+  // alphabetical - which is what makes "Quest-giver" read as clean per-trader groups.
+  function sortQuests(list, mode) {
+    const byName = (a, b) => nameKey(a).localeCompare(nameKey(b));
+    const sorted = list.slice();
+    if (mode === 'name') {
+      sorted.sort(byName);
+    } else {
+      sorted.sort((a, b) => (a.trader || '').localeCompare(b.trader || '') || byName(a, b));
+    }
+    return sorted;
+  }
+  function renderSearch() {
+    pinMode = true;
+    refreshPinSet();
+    const f = $('#s-search').value.toLowerCase().trim();
+    // Union, not a filter: when ticked, a quest shows if it matches the search text OR is an
+    // any-map quest - so your search results always come alongside everything you can do anywhere.
+    const anyMap = $('#s-anymap').checked;
+    const hideDone = $('#s-hidedone').checked;
+    const killOnly = $('#s-killonly').checked;
+    const hideEmpty = $('#s-hideempty').checked;
+    const shown = [];
+    for (const q of searchQuests) {
+      const v = searchView(q, hideDone, killOnly);
+      // Drop quests with nothing left to show once the filters run (on by default). This also covers the
+      // old "all objectives completed" case, and quests that ship with no objective text at all.
+      if (hideEmpty && (v.objectives || []).length === 0) continue;
+      if (matches(v, f) || (anyMap && hasAnyMap(v))) shown.push(v);
+    }
+    const ordered = sortQuests(shown, $('#s-sort').value);
+    // Rows wrap the left-hand thumbnail in a .qthumb box that shrinks vertically to the quest's own text
+    // height (cropping the image, never stretching it) up to the standard 177px max - same treatment the
+    // Re-roll tab uses.
+    $('#s-list').innerHTML = ordered.length
+      ? ordered.map(q => `<div class="qrow">`
+          + (q.image ? `<div class="qthumb"><img src="${esc(q.image)}" loading="lazy" alt=""></div>` : '')
+          + questBody(q, f) + '</div>').join('')
+      : '<div class="row muted">No matching quests.</div>';
+    $('#s-status').textContent = shown.length + ' / ' + searchQuests.length + ' accepted quest(s).';
+  }
+
+  // ---- History ----
+  let historyEntries = [];
+  async function loadHistory() {
+    try {
+      historyEntries = await (await fetch(api('history'))).json();
+      // Player filter options from the nicknames actually present; keep the current selection when
+      // the list refreshes (e.g. right after your own re-roll).
+      const sel = $('#h-player'), prev = sel.value;
+      const players = [...new Set(historyEntries.map(e => e.nickname))].sort((a, b) => a.localeCompare(b));
+      sel.innerHTML = '<option value="">All players</option>'
+        + players.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
+      if (players.includes(prev)) sel.value = prev;
+      renderHistory();
+    } catch (e) { $('#h-list').innerHTML = '<div class="row muted">Could not load history.</div>'; }
+  }
+  function renderHistory() {
+    const player = $('#h-player').value;
+    const action = $('#h-action').value;
+    const f = $('#h-search').value.toLowerCase().trim();
+    const shown = historyEntries.filter(e =>
+      (!player || e.nickname === player)
+      && (!action || e.action === action)
+      && (!f || e.nickname.toLowerCase().includes(f) || (e.ip || '').toLowerCase().includes(f)
+          || (e.quests || []).some(q => (q || '').toLowerCase().includes(f))));
+    $('#h-list').innerHTML = shown.length
+      ? shown.map(e => `<div class="qrow"><div class="grow">`
+          + `<div class="qname">${hl(e.nickname, f)} <span class="qtrader">${({replay:'re-played',verify:'repaired'}[e.action] || 're-rolled')}${e.admin ? ' (admin)' : ''}:</span> ${(e.quests || []).map(q => hl(q, f)).join(', ')}</div>`
+          + `<div class="rw">${esc(new Date(e.time).toLocaleString())}${e.ip ? ' &middot; from ' + hl(e.ip, f) : ''}</div>`
+          + '</div></div>').join('')
+      : '<div class="row muted">No matching history entries.</div>';
+    $('#h-status').textContent = shown.length + ' / ' + historyEntries.length + ' action(s).';
+  }
+
+  // ---- wiring ----
+  // Which of our tabs (if any) the URL hash names, so the nav rail can deep-link straight to a tab
+  // (/questrandomizer/ui#reroll) and clicking a tab here updates the rail's highlight in turn.
+  const TABS = ['search', 'reroll', 'history'];
+  const hashToTab = () => { const h = location.hash.replace(/^#/, ''); return TABS.includes(h) ? h : null; };
+  function selectTab(name) {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+    const btn = document.querySelector('.tab[data-tab="' + name + '"]');
+    (btn || document.querySelector('.tab')).classList.add('active');
+    $('#pane-' + ((btn && name) || 'search')).classList.add('active');
+  }
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    selectTab(t.dataset.tab);
+    // Reflect the tab in the hash so the rail's highlight follows (fires 'hashchange').
+    if (location.hash !== '#' + t.dataset.tab) location.hash = t.dataset.tab;
+  }));
+  // Rail deep-link into another tab only changes the hash - react to it. Tab state is hash-driven so
+  // the page and the rail's highlight never disagree; a bare URL means the default (Search).
+  window.addEventListener('hashchange', () => selectTab(hashToTab() || 'search'));
+  $('#profile').addEventListener('change', () => { localStorage.setItem(LS.profile, pid()); loadActive(); loadSearch(); });
+  $('#s-search').addEventListener('input', renderSearch);
+  $('#s-sort').addEventListener('change', () => { localStorage.setItem(LS.sort, $('#s-sort').value); renderSearch(); });
+  $('#s-anymap').addEventListener('change', () => { localStorage.setItem(LS.anymap, $('#s-anymap').checked ? '1' : ''); renderSearch(); });
+  $('#s-hidedone').addEventListener('change', () => { localStorage.setItem(LS.hidedone, $('#s-hidedone').checked ? '1' : ''); renderSearch(); });
+  $('#s-killonly').addEventListener('change', () => { localStorage.setItem(LS.killonly, $('#s-killonly').checked ? '1' : ''); renderSearch(); });
+  // Stored as '1'/'0' (not '1'/'') because this toggle defaults ON: an absent key must read as on.
+  $('#s-hideempty').addEventListener('change', () => { localStorage.setItem(LS.hideempty, $('#s-hideempty').checked ? '1' : '0'); renderSearch(); });
+  $('#r-search').addEventListener('input', renderActive);
+  $('#r-admin').addEventListener('change', () => { localStorage.setItem(LS.admin, adminOn() ? '1' : ''); $('#r-disclaimer').hidden = !adminOn(); loadActive(); });
+  $('#r-go').addEventListener('click', reroll);
+  $('#r-locked').addEventListener('click', rerollLocked);
+  // Rows are plain divs now (not labels), so route clicks by hand: per-row button re-rolls just that
+  // quest, wiki links and the checkbox itself keep their native behavior, any other click on the row
+  // toggles its checkbox.
+  $('#r-list').addEventListener('click', e => {
+    const cl = e.target.closest('.chainlink');
+    if (cl) { e.preventDefault(); $('#r-search').value = cl.dataset.name; renderActive(); $('#r-list').scrollTop = 0; return; }
+    const b = e.target.closest('[data-reroll]');
+    if (b) { doReroll([b.dataset.reroll]); return; }
+    if (e.target.closest('a') || e.target.matches('input[type=checkbox]')) return;
+    const row = e.target.closest('.qrow.pick');
+    const box = row && row.querySelector('input[type=checkbox]');
+    if (box) box.checked = !box.checked;
+  });
+  // Chain-neighbour click on the search tab jumps that list to the quest (no rows are selectable here).
+  $('#s-list').addEventListener('click', e => {
+    const pb = e.target.closest('.pinbtn');
+    if (pb) { togglePin(pinDataFromBtn(pb)); return; }
+    const cl = e.target.closest('.chainlink');
+    if (!cl) return;
+    e.preventDefault(); $('#s-search').value = cl.dataset.name; renderSearch(); $('#s-list').scrollTop = 0;
+  });
+  // Pin tray: unpin a line, collapse / expand the tray, clear it. Collapsed state is persisted too.
+  $('#s-pins-list').addEventListener('click', e => {
+    const jb = e.target.closest('.pinjump');
+    if (jb) { jumpToPin(pinDataFromBtn(jb)); return; }
+    const pb = e.target.closest('.pinbtn');
+    if (pb) togglePin(pinDataFromBtn(pb));
+  });
+  $('#s-pins-toggle').addEventListener('click', () => {
+    const collapsed = $('#s-pins').classList.toggle('collapsed');
+    $('#s-pins-toggle').setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    try { localStorage.setItem(LS_PINS_COLLAPSED, collapsed ? '1' : ''); } catch (e) {}
+  });
+  // Refresh: re-pull quest data (loadSearch already re-syncs pins to live progress and repaints the
+  // tray) so the pinned counters catch up to what you've done in-raid, without a full page reload.
+  // The fetch is near-instant on localhost, so a plain spinner just flickers - instead we confirm with
+  // "Refreshed ✓" and hold a 10s countdown lock-out, which both proves it ran and discourages spamming.
+  $('#s-pins-refresh').addEventListener('click', async () => {
+    const btn = $('#s-pins-refresh');
+    btn.disabled = true;
+    btn.textContent = 'Refreshing…';
+    try { await loadSearch(); }
+    catch (e) { btn.textContent = 'Refresh'; btn.disabled = false; return; }
+    // Held disabled through the countdown; the button re-enables only when it ticks back to "Refresh".
+    let left = 10;
+    btn.textContent = 'Refreshed ✓ (' + left + 's)';
+    const timer = setInterval(() => {
+      left -= 1;
+      if (left > 0) { btn.textContent = 'Refreshed ✓ (' + left + 's)'; return; }
+      clearInterval(timer);
+      btn.textContent = 'Refresh';
+      btn.disabled = false;
+    }, 1000);
+  });
+  $('#s-pins-clear').addEventListener('click', () => { savePins([]); renderPins(); renderSearch(); });
+  // One shared "Quest chains" toggle drives both tabs: keep the two checkboxes in sync, persist, and
+  // re-render both lists so switching tabs shows the same state.
+  function setChain(on) {
+    showChain = on;
+    $('#r-chain').checked = on; $('#s-chain').checked = on;
+    localStorage.setItem(LS.chain, on ? '1' : '');
+    renderActive(); renderSearch();
+  }
+  $('#r-chain').addEventListener('change', () => setChain($('#r-chain').checked));
+  $('#s-chain').addEventListener('change', () => setChain($('#s-chain').checked));
+  // "Hide rewards" spoiler toggle, shared across both tabs exactly like Quest chains: keep the two
+  // checkboxes in sync, persist, and re-render both lists.
+  function setHideRewards(on) {
+    hideRewards = on;
+    $('#r-hiderewards').checked = on; $('#s-hiderewards').checked = on;
+    localStorage.setItem(LS.hiderewards, on ? '1' : '');
+    renderActive(); renderSearch();
+  }
+  $('#r-hiderewards').addEventListener('change', () => setHideRewards($('#r-hiderewards').checked));
+  $('#s-hiderewards').addEventListener('change', () => setHideRewards($('#s-hiderewards').checked));
+  $('#r-all').addEventListener('click', () => document.querySelectorAll('#r-list input').forEach(c => c.checked = true));
+  $('#r-none').addEventListener('click', () => document.querySelectorAll('#r-list input').forEach(c => c.checked = false));
+  $('#h-search').addEventListener('input', renderHistory);
+  $('#h-player').addEventListener('change', renderHistory);
+  $('#h-action').addEventListener('change', renderHistory);
+  // Restore last session's admin mode + open tab BEFORE the first load (loadActive reads adminOn()).
+  if (localStorage.getItem(LS.admin) === '1') { $('#r-admin').checked = true; $('#r-disclaimer').hidden = false; }
+  { const s = localStorage.getItem(LS.sort); if (s) $('#s-sort').value = s; }
+  if (localStorage.getItem(LS.anymap) === '1') $('#s-anymap').checked = true;
+  if (localStorage.getItem(LS.hidedone) === '1') $('#s-hidedone').checked = true;
+  if (localStorage.getItem(LS.killonly) === '1') $('#s-killonly').checked = true;
+  // Defaults ON (matches the HTML `checked`): only an explicit '0' turns it off.
+  $('#s-hideempty').checked = localStorage.getItem(LS.hideempty) !== '0';
+  if (localStorage.getItem(LS.chain) === '1') { showChain = true; $('#r-chain').checked = true; $('#s-chain').checked = true; }
+  if (localStorage.getItem(LS.hiderewards) === '1') { hideRewards = true; $('#r-hiderewards').checked = true; $('#s-hiderewards').checked = true; }
+  selectTab(hashToTab() || 'search');
+  // Objective pins: restore the collapsed state and paint the tray from localStorage (persists across
+  // reloads and tab closes).
+  if (localStorage.getItem(LS_PINS_COLLAPSED) === '1') {
+    $('#s-pins').classList.add('collapsed');
+    $('#s-pins-toggle').setAttribute('aria-expanded', 'false');
+  }
+  renderPins();
+  // Handbook-category names load FIRST so the initial render already knows which bracketed labels are
+  // categories (linked to the handbook) rather than items; profile and quest lists follow. If the
+  // endpoint fails we render anyway - category names just fall through to item-browser search links.
+  loadHandbookNames().then(loadProfiles);
+  loadHistory(); // global, not per-profile - independent of the profile list
+</script>
+</body>
+</html>

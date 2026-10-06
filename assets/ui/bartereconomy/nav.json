@@ -1,0 +1,12 @@
+{
+  "label": "Barter Economy",
+  "icon": "🤝",
+  "home": "/bartereconomy/ui",
+  "children": [
+    { "label": "Timers",    "icon": "⏱️", "href": "/bartereconomy/ui"        },
+    { "label": "Trades",    "icon": "💱", "href": "/bartereconomy/ui/trades" },
+    { "label": "Search",    "icon": "🔍", "href": "/bartereconomy/ui/search" },
+    { "label": "Tier list", "icon": "📊", "href": "/bartereconomy/ui/tiers"  },
+    { "label": "Pinned",    "icon": "📌", "href": "/bartereconomy/ui/pinned" }
+  ]
+}

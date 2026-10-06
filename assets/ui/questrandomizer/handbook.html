@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questrandomizer — Handbook</title>
+<link rel="stylesheet" href="/webui/base.css">
+<link rel="stylesheet" href="/questrandomizer/ui/styles.css">
+<!-- Optional cross-mod nav rail (Leaves-WebUI). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>Questrandomizer</h1>
+    <div class="muted" style="font-size:13px;">📖 Handbook</div>
+    <div class="sidesep"></div>
+    <button class="tab navbtn active" data-tab="weapon">Weapon categories</button>
+    <button class="tab navbtn" data-tab="mod">Mod categories</button>
+    <button class="tab navbtn" data-tab="gear">Gear categories</button>
+    <button class="tab navbtn" data-tab="allweapons">All weapons</button>
+    <button class="tab navbtn" data-tab="overlap">Weapon overlap</button>
+    <label class="admintoggle" title="Expand every category at once"><input type="checkbox" id="expand"> Expand all</label>
+    <div class="sidenote">The weapon, mod &amp; gear categories quest generation draws from. Each weapon kill quest requires one (or two) weapon categories; a category's required / forbidden mods apply to every weapon in it. A "wear X" objective requires any one piece from a gear category. Weapon &amp; mod data mirrors the in-game handbook section.</div>
+  </aside>
+  <main class="main">
+    <div class="sub" id="sub">Loading…</div>
+    <div class="bar">
+      <input type="text" id="q" placeholder="Filter categories &amp; items…" autocomplete="off">
+    </div>
+    <div id="content"><div class="row muted">Loading…</div></div>
+    <div class="status" id="status"></div>
+  </main>
+</div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const rxEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Highlight every match (escape the text first, then highlight with the equally-escaped needle).
+  // With the &/| query language a search can carry several terms, so highlight each of them.
+  function hl(text, f) {
+    const e = esc(text || '');
+    const terms = LeavesSearch.terms(f);
+    if (!terms.length) return e;
+    const rx = terms.map(t => rxEsc(esc(t))).join('|');
+    return e.replace(new RegExp(rx, 'gi'), m => `<mark>${m}</mark>`);
+  }
+  // Same slug rule both pages use, so a reroll-page link (#weapon-<slug>) lands on the card whose id
+  // this builds from the same name.
+  const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const LS = { tab: 'qr_hb_tab', expand: 'qr_hb_expand', overlap: 'qr_hb_overlap', onlyeq: 'qr_hb_onlyeq' };
+
+  // Every weapon / mod / gear entry here is a real item, so its name links into the Leaves item browser
+  // as a search (/webui/db?q=<name>); the browser opens it outright when the name matches one item, and
+  // resolves modded items too. Reuses a single "qr-itembrowser" tab, same as the quests page.
+  const itemSearchHref = name => '/webui/db?q=' + encodeURIComponent(String(name).trim());
+  // Rendered near-plain (see a.itemlink in styles.css) so the dense category lists don't turn into a wall
+  // of loud links; the only cues that it IS a link are the hover underline and a small hover tooltip.
+  const itemLink = (name, f) => `<a class="itemlink" href="${esc(itemSearchHref(name))}" target="qr-itembrowser" rel="noopener" title="Open in Item Browser 🔗">${hl(name, f)}</a>`;
+
+  let DATA = null;
+  let modNames = new Set();                 // lowercased mod-category names, for the weapon->mod links
+  let tab = localStorage.getItem(LS.tab) || 'weapon';
+
+  // Weapon-overlap tool: the set of weapon-category NAMES the user has ticked to compare. Persisted so
+  // a comparison survives a reload / a hop to a category card and back.
+  let overlapSel = new Set();
+  try { overlapSel = new Set(JSON.parse(localStorage.getItem(LS.overlap) || '[]')); } catch (e) { overlapSel = new Set(); }
+  const saveOverlap = () => localStorage.setItem(LS.overlap, JSON.stringify([...overlapSel]));
+
+  // A required/forbidden mod name becomes a link to its OWN mod-category card when that card exists.
+  function modLink(name, f) {
+    if (modNames.has(name.toLowerCase())) {
+      return `<a class="modlink" href="#mod-${slugify(name)}">${hl(name, f)}</a>`;
+    }
+    return hl(name, f);
+  }
+
+  // Join everything about a category that should be searchable into one haystack string, so an
+  // &/| query can match terms that live in different fields (e.g. "ak & 7.62").
+  function catHaystack(cat, kind) {
+    const parts = [cat.name];
+    if (kind === 'mod') parts.push(...cat.mods);
+    else if (kind === 'gear') parts.push(...cat.items);
+    else {
+      // weapon: weapons are { name, equivalents }; also the required / forbidden mod names.
+      for (const w of cat.weapons) {
+        parts.push(w.name);
+        parts.push(...(w.equivalents || []));
+      }
+      parts.push(...(cat.requiredMods || []), ...(cat.forbiddenMods || []));
+    }
+    return parts.join(' ');
+  }
+  function matches(cat, kind, f) {
+    return LeavesSearch.test(catHaystack(cat, kind), f);
+  }
+
+  // The weapon/mod item list: one <li> per weapon or mod, top to bottom. A weapon's equivalents (other
+  // weapons that also count for it) hang beneath it in an indented sub-list, each prefixed with "=" -
+  // the same shape as the in-game category sheet. Mods have no equivalents, so they're a flat list.
+  function itemListHtml(cat, kind, f) {
+    if (kind === 'mod') {
+      return cat.mods.length ? cat.mods.map(m => `<li>${itemLink(m, f)}</li>`).join('') : '<li class="muted">(none listed)</li>';
+    }
+    if (kind === 'gear') {
+      return cat.items.length ? cat.items.map(i => `<li>${itemLink(i, f)}</li>`).join('') : '<li class="muted">(none listed)</li>';
+    }
+    if (!cat.weapons.length) return '<li class="muted">(none listed)</li>';
+    return cat.weapons.map(w => {
+      const eq = (w.equivalents || []).map(e => `<li>${itemLink(e, f)}</li>`).join('');
+      return `<li>${itemLink(w.name, f)}${eq ? `<ul class="hbequivs">${eq}</ul>` : ''}</li>`;
+    }).join('');
+  }
+
+  function card(cat, kind, f) {
+    const count = (kind === 'weapon' ? cat.weapons : kind === 'gear' ? cat.items : cat.mods).length;
+    const id = `${kind}-${slugify(cat.name)}`;
+    const tags = [];
+    if (kind === 'weapon') {
+      if (cat.anyWeapon) tags.push('<span class="hbtag any">any weapon</span>');
+      if ((cat.requiredMods || []).length) tags.push('<span class="hbtag req">requires mods</span>');
+      if ((cat.forbiddenMods || []).length) tags.push('<span class="hbtag forb">forbids mods</span>');
+    }
+    let mods = '';
+    if (kind === 'weapon' && ((cat.requiredMods || []).length || (cat.forbiddenMods || []).length)) {
+      mods = '<div class="hbmods">';
+      if ((cat.requiredMods || []).length) mods += `<b class="req">Required:</b> ${cat.requiredMods.map(m => modLink(m, f)).join(', ')}<br>`;
+      if ((cat.forbiddenMods || []).length) mods += `<b class="forb">Forbidden:</b> ${cat.forbiddenMods.map(m => modLink(m, f)).join(', ')}`;
+      mods += '</div>';
+    }
+    const open = f ? ' open' : '';
+    return `<details class="hbcat" id="${id}"${open}><summary>${hl(cat.name, f)} <span class="hbcount">${count}</span> ${tags.join(' ')}</summary>`
+      + `<div class="hbbody">${mods}<ul class="hbitems">${itemListHtml(cat, kind, f)}</ul></div></details>`;
+  }
+
+  function dataFor(k) {
+    return k === 'weapon' ? DATA.weaponCategories : k === 'gear' ? DATA.gearCategories : DATA.modCategories;
+  }
+
+  // ---- All-weapons list ----
+  // A flat, searchable list of every weapon the randomizer can require (DATA.allWeapons), each with its
+  // equivalents indented beneath - the global "weapon -> what counts as it" view, as opposed to the
+  // weapon-categories tab which groups the same guns by the category that requires them.
+  function weaponMatches(w, f) {
+    return LeavesSearch.test([w.name].concat(w.equivalents || []).join(' '), f);
+  }
+  function weaponRow(w, f) {
+    const eqs = w.equivalents || [];
+    const badge = eqs.length ? `<span class="hbcount">${eqs.length}</span>` : '';
+    const sub = eqs.length ? `<ul class="hbequivs">${eqs.map(e => `<li>${itemLink(e, f)}</li>`).join('')}</ul>` : '';
+    return `<li>${itemLink(w.name, f)} ${badge}${sub}</li>`;
+  }
+  function renderAllWeapons(f) {
+    $('#sub').textContent = 'Every weapon quest generation can require, with the weapons that also count as it (its equivalents).';
+    const onlyEq = localStorage.getItem(LS.onlyeq) === '1';
+    let list = DATA.allWeapons.filter(w => weaponMatches(w, f));
+    if (onlyEq) list = list.filter(w => (w.equivalents || []).length > 0);
+    const withEq = DATA.allWeapons.filter(w => (w.equivalents || []).length > 0).length;
+
+    const bar = `<label class="ovrow${onlyEq ? ' on' : ''}" style="max-width:320px;margin-bottom:10px;">`
+      + `<input type="checkbox" id="onlyeq"${onlyEq ? ' checked' : ''}>`
+      + '<span class="ovname">Only weapons with equivalents</span></label>';
+    const body = list.length
+      ? `<ul class="hbitems">${list.map(w => weaponRow(w, f)).join('')}</ul>`
+      : '<div class="row muted">No matching weapons.</div>';
+    $('#content').innerHTML = bar + body;
+    $('#status').textContent = `${DATA.allWeapons.length} weapons · ${withEq} with equivalents`
+      + ((f || onlyEq) ? ` · ${list.length} shown` : '');
+  }
+
+  // ---- Weapon-overlap tool ----
+  // A separate view (not a category "kind"): pick 2+ weapon categories on the left, and the right pane
+  // lists every weapon shared by two or more of them - answering "where do these categories cross over?"
+  // (e.g. an AK-type category and a 7.62x39 caliber category share the AK-762 rifles). All the data is
+  // already client-side, so this is pure front-end. Overlap is computed on the weapon DISPLAY NAME, the
+  // only weapon identity the handbook payload carries. A category's set includes its EQUIVALENTS (the
+  // reskins that count as one of its weapons for a quest), so e.g. a golden RSH-12 overlaps anywhere the
+  // real RSH-12 does.
+  function renderOverlap(f) {
+    $('#sub').textContent = 'Tick two or more weapon categories to see which weapons they share.';
+    const shown = DATA.weaponCategories.filter(c => LeavesSearch.test(c.name, f));
+    const picker = shown.length
+      ? shown.map(c => {
+          const on = overlapSel.has(c.name);
+          return `<label class="ovrow${on ? ' on' : ''}"><input type="checkbox" class="ovtoggle" value="${esc(c.name)}"${on ? ' checked' : ''}>`
+               + `<span class="ovname">${hl(c.name, f)}</span><span class="hbcount">${c.weapons.length}</span></label>`;
+        }).join('')
+      : '<div class="ovhint muted">No matching weapon categories.</div>';
+    $('#content').innerHTML =
+        '<div class="ovwrap">'
+      +   '<div class="ovpicker">'
+      +     '<div class="ovpickhead"><span>Weapon categories</span>'
+      +       '<button type="button" class="linkbtn" id="ovclear">clear</button></div>'
+      +     `<div class="ovpicklist">${picker}</div>`
+      +   '</div>'
+      +   '<div class="ovresults" id="ov-results"></div>'
+      + '</div>';
+    updateOverlapResults();
+  }
+
+  function updateOverlapResults() {
+    const box = document.getElementById('ov-results');
+    if (!box) return;
+    // Ignore any stored name that no longer exists (categories can change between server builds).
+    const byName = new Map(DATA.weaponCategories.map(c => [c.name, c]));
+    const sel = [...overlapSel].filter(n => byName.has(n));
+
+    if (sel.length < 2) {
+      box.innerHTML = `<div class="ovhint muted">Select at least two categories on the left to compare.`
+        + `${sel.length === 1 ? ' One selected so far.' : ''}</div>`;
+      $('#status').textContent = `${sel.length} categor${sel.length === 1 ? 'y' : 'ies'} selected`;
+      return;
+    }
+
+    // weapon name -> which of the selected categories contain it. A category's set is its listed
+    // weapons PLUS their equivalents; the per-category Set dedupes a weapon that is both a member and
+    // some other member's equivalent, so each category counts a given weapon at most once.
+    const inCats = new Map();
+    for (const n of sel) {
+      const names = new Set();
+      for (const w of byName.get(n).weapons) {
+        names.add(w.name);
+        for (const e of (w.equivalents || [])) names.add(e);
+      }
+      for (const nm of names) {
+        if (!inCats.has(nm)) inCats.set(nm, []);
+        inCats.get(nm).push(n);
+      }
+    }
+    // Overlaps = weapons in 2+ selected categories, most-shared first, then alphabetical.
+    const overlaps = [...inCats.entries()]
+      .filter(([, cs]) => cs.length >= 2)
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+    const full = overlaps.filter(([, cs]) => cs.length === sel.length).length;
+
+    const head = `<div class="ovsum"><b>${overlaps.length}</b> weapon${overlaps.length === 1 ? '' : 's'} shared by 2+ of `
+      + `<b>${sel.length}</b> selected categories${full ? ` · <b>${full}</b> in all ${sel.length}` : ''}`
+      + `<div class="ovselrow">${sel.map(n => `<span class="hbtag ovsel">${esc(n)}</span>`).join(' ')}</div></div>`;
+
+    const rows = overlaps.length
+      ? '<ul class="hbitems ovlist">' + overlaps.map(([w, cs]) => {
+          const all = cs.length === sel.length;
+          const chips = cs.map(c => `<span class="hbtag ovin">${esc(c)}</span>`).join(' ');
+          return `<li class="${all ? 'ovall' : ''}"><span class="ovweap">${itemLink(w, '')}</span>`
+            + `<span class="ovcount">${cs.length}/${sel.length}</span><span class="ovcats">${chips}</span></li>`;
+        }).join('') + '</ul>'
+      : '<div class="ovhint muted">No weapons are shared between the selected categories.</div>';
+
+    box.innerHTML = head + rows;
+    $('#status').textContent = `${sel.length} categories selected · ${overlaps.length} overlapping weapons`;
+  }
+
+  function render() {
+    if (!DATA) return;
+    const f = $('#q').value.trim().toLowerCase();
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    if (tab === 'overlap') { renderOverlap(f); return; }
+    if (tab === 'allweapons') { renderAllWeapons(f); return; }
+    const list = dataFor(tab).filter(c => matches(c, tab, f));
+    const kindLabel = tab === 'weapon' ? 'weapon' : tab === 'gear' ? 'gear' : 'mod';
+    $('#content').innerHTML = list.length ? list.map(c => card(c, tab, f)).join('')
+      : `<div class="row muted">No matching ${kindLabel} categories.</div>`;
+    if ($('#expand').checked) document.querySelectorAll('.hbcat').forEach(d => d.open = true);
+    $('#sub').textContent = tab === 'weapon'
+      ? 'Weapon categories a kill quest can require. A category’s required / forbidden mods link to their own mod category.'
+      : tab === 'gear'
+      ? 'Gear categories a “wear X while killing” objective can require — the player may wear any one of the listed pieces.'
+      : 'Mod categories — used as a weapon category’s required / forbidden mods.';
+    $('#status').textContent = `${DATA.weaponCategories.length} weapon categories · ${DATA.modCategories.length} mod categories · ${DATA.gearCategories.length} gear categories`;
+  }
+
+  function setTab(k) {
+    tab = k;
+    localStorage.setItem(LS.tab, k);
+    render();
+  }
+
+  // Follow a #weapon-<slug> / #mod-<slug> hash (e.g. arriving from the quests page): switch to the
+  // right tab, clear any filter so the target isn't hidden, open the card and scroll it into view.
+  function focusHash() {
+    const h = decodeURIComponent(location.hash.slice(1));
+    if (!h) return;
+    const kind = h.startsWith('mod-') ? 'mod' : h.startsWith('gear-') ? 'gear' : 'weapon';
+    $('#q').value = '';
+    if (tab !== kind) setTab(kind); else render();
+    const el = document.getElementById(h);
+    if (el) {
+      el.open = true;
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 3600);
+    }
+  }
+
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+  $('#q').addEventListener('input', render);
+  // Overlap tool: ticking a category updates only the results pane (leaving the picker's scroll/filter
+  // intact); "clear" empties the selection and re-renders. Delegated once - survives every re-render.
+  $('#content').addEventListener('change', e => {
+    const t = e.target;
+    if (t.id === 'onlyeq') {
+      localStorage.setItem(LS.onlyeq, t.checked ? '1' : '');
+      render();
+      return;
+    }
+    if (!t.classList.contains('ovtoggle')) return;
+    if (t.checked) overlapSel.add(t.value); else overlapSel.delete(t.value);
+    const row = t.closest('.ovrow');
+    if (row) row.classList.toggle('on', t.checked);
+    saveOverlap();
+    updateOverlapResults();
+  });
+  $('#content').addEventListener('click', e => {
+    if (e.target.id === 'ovclear') { overlapSel.clear(); saveOverlap(); render(); }
+  });
+  $('#expand').addEventListener('change', () => { localStorage.setItem(LS.expand, $('#expand').checked ? '1' : ''); render(); });
+  window.addEventListener('hashchange', focusHash);
+
+  async function load() {
+    try {
+      const r = await fetch('/questrandomizer/api/handbook');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      DATA = await r.json();
+      modNames = new Set(DATA.modCategories.map(c => c.name.toLowerCase()));
+      $('#expand').checked = localStorage.getItem(LS.expand) === '1';
+      render();
+      focusHash();
+    } catch (e) {
+      $('#content').innerHTML = `<div class="row warn">Failed to load the handbook: ${esc(e.message || e)}</div>`;
+    }
+  }
+  load();
+</script>
+</body>
+</html>

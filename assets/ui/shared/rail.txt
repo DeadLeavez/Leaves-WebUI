@@ -1,0 +1,777 @@
+/*
+ * Leaves-WebUI nav rail.
+ *
+ * Loaded by any mod page that opts in with <script defer src="/webui/rail.js"></script>. Paints a
+ * fixed vertical rail down the RIGHT edge listing every installed Leaves mod that has a web UI, with
+ * the current one highlighted; clicking navigates to that mod's own page.
+ *
+ * Self-contained: no framework, no external fetch (only same-origin probes to localhost mods), its own
+ * scoped `lwr-` styles so it can't collide with the host page. If a mod isn't installed its probe
+ * fails and it's silently dropped, so the rail only ever shows what's actually there.
+ */
+(function () {
+  "use strict";
+
+  // ---- shared boolean search helper -----------------------------------------------------
+  // Every mod page filters some list by a text box. This exposes a tiny query language all of
+  // them share: `&` = AND, `|` = OR, with `&` binding tighter than `|`, so "a & b | c" means
+  // "(a AND b) OR c". Plain text with no operators is just a single substring term, exactly as
+  // before. Terms are matched case-insensitively against a page-supplied haystack string (each
+  // page joins whatever fields it wants searchable into one string). Published on `window` so
+  // every page — this rail loads on all of them — can call it without duplicating the parser.
+  var LeavesSearch = {
+    // "a & b | c" -> [["a","b"],["c"]]. Empty/whitespace terms are dropped; a fully empty query
+    // returns [] which every caller treats as "match everything".
+    parse: function (raw) {
+      var groups = [];
+      var text = (raw == null ? "" : String(raw)).toLowerCase();
+      var ors = text.split("|");
+      for (var i = 0; i < ors.length; i++) {
+        var terms = [];
+        var ands = ors[i].split("&");
+        for (var j = 0; j < ands.length; j++) {
+          var term = ands[j].trim();
+          if (term) {
+            terms.push(term);
+          }
+        }
+        if (terms.length > 0) {
+          groups.push(terms);
+        }
+      }
+      return groups;
+    },
+
+    // Every term across all groups, flattened - for highlighting each matched piece.
+    terms: function (raw) {
+      var groups = this.parse(raw);
+      var out = [];
+      for (var i = 0; i < groups.length; i++) {
+        for (var j = 0; j < groups[i].length; j++) {
+          out.push(groups[i][j]);
+        }
+      }
+      return out;
+    },
+
+    // Does `haystack` satisfy the query? True for an empty query. A group (AND) passes only if
+    // every one of its terms is a substring; the whole query (OR) passes if any group passes.
+    test: function (haystack, raw) {
+      var groups = this.parse(raw);
+      if (groups.length === 0) {
+        return true;
+      }
+      var hay = (haystack == null ? "" : String(haystack)).toLowerCase();
+      for (var i = 0; i < groups.length; i++) {
+        var all = true;
+        for (var j = 0; j < groups[i].length; j++) {
+          if (hay.indexOf(groups[i][j]) === -1) {
+            all = false;
+            break;
+          }
+        }
+        if (all) {
+          return true;
+        }
+      }
+      return false;
+    }
+  };
+  window.LeavesSearch = LeavesSearch;
+
+  // ---- shared EFT/Unity rich-text ("RTT") helpers -------------------------------------------
+  // Item / location names and descriptions can carry Unity rich-text tags - <b>/<i>/<u>,
+  // <color=#ffe500>…</color> tier markers, <size=…> etc. The game renders them; a raw web dump
+  // shows them as literal noise. Published on `window` so every mod page shares one copy instead
+  // of re-implementing it (config editor picker, item browser, …).
+  var LeavesRTT = {
+    escapeHtml: function (s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+        if (c === "&") { return "&amp;"; }
+        if (c === "<") { return "&lt;"; }
+        if (c === ">") { return "&gt;"; }
+        if (c === '"') { return "&quot;"; }
+        return "&#39;";
+      });
+    },
+
+    // Escape EVERYTHING first, then re-enable only a known whitelist of tags - so any other
+    // angle-bracket text stays inert (no injection surface). <color> becomes a real coloured
+    // <span>; layout-only tags are dropped but their text kept. Returns HTML (use with innerHTML).
+    toHtml: function (raw) {
+      if (raw == null) { return ""; }
+      var s = this.escapeHtml(String(raw));
+      s = s.replace(/\r\n|\r|\n/g, "<br>").replace(/\\n/g, "<br>");
+      s = s.replace(/&lt;(\/?)(b|i|u)&gt;/gi, "<$1$2>");
+      s = s.replace(/&lt;color=(?:&quot;|&#39;|"|')?#?([0-9a-fA-F]{3,8}|[a-zA-Z]+)(?:&quot;|&#39;|"|')?&gt;/gi,
+        function (m, val) {
+          var color = /^[0-9a-fA-F]{3,8}$/.test(val) ? ("#" + val) : val.toLowerCase();
+          return '<span style="color:' + color + '">';
+        });
+      s = s.replace(/&lt;\/color&gt;/gi, "</span>");
+      s = s.replace(/&lt;\/?(size|align|rotate|cspace|mspace|pos|voffset|indent|sprite)(=[^&]*?)?&gt;/gi, "");
+      return s;
+    },
+
+    // Plain-text form: strip every tag and flatten newlines. For search boxes, <option>s, titles.
+    strip: function (raw) {
+      if (raw == null) { return ""; }
+      return String(raw)
+        .replace(/<[^>]*>/g, "")
+        .replace(/\\n/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  };
+  window.LeavesRTT = LeavesRTT;
+
+  // The known suite. Adding a mod later = add a row here (and drop the one <script> tag in its page).
+  // `slug` is the mod's URL prefix, used both to probe and to highlight the current page.
+  //
+  // A mod can OPT IN to the collapsible sub-tree rendering by adding `navUrl`: a JSON manifest it
+  // serves itself, shaped { label, icon, home, children:[{label,href}], devTools:[{label,icon,href}] }.
+  // When that manifest loads, the mod renders as an expandable group (parent row + child pages) and
+  // its `devTools` are folded into the Dev Utils section. If `navUrl` is absent or the fetch fails,
+  // the mod renders as a plain flat row exactly as before.
+  var MODS = [
+    { slug: "questrandomizer", name: "Quest Randomizer", icon: "🔀", pageUrl: "/questrandomizer/ui", navUrl: "/questrandomizer/ui/nav.json" },
+    { slug: "bartereconomy", name: "Barter Economy", icon: "🤝", pageUrl: "/bartereconomy/ui", navUrl: "/bartereconomy/ui/nav.json" },
+    { slug: "lootfuckery", name: "Loot Fuckery", icon: "📦", pageUrl: "/lootfuckery/ui/dump" },
+    { slug: "guildstash", name: "Guild Stash", icon: "🗃️", pageUrl: "/guildstash/ui" },
+    { slug: "webui", name: "Item Browser", icon: "🔍", pageUrl: "/webui/db" },
+    // `locked: true` = an "accident lock" entry: greyed out and unclickable until the user clears the
+    // rail padlock (only when LeavesUtil's WebUI_LockPassword is set; see fetchLock / the lock section).
+    { slug: "webui", name: "Config Editor", icon: "⚙️", pageUrl: "/webui/config/ui", locked: true }
+  ];
+
+  // Dev-only tools. Rendered in their own "Dev Utils" section pinned to the BOTTOM of the rail (it fills
+  // upward from the bottom edge), separate from the mods above. Probed the same way as MODS.
+  var DEV_TOOLS = [
+    { slug: "webui", name: "Dev · Routes", icon: "🛠️", pageUrl: "/webui/dev/routes" },
+    { slug: "webui", name: "Dev · Load Order", icon: "🔢", pageUrl: "/webui/dev/loadorder" }
+  ];
+
+  var RAIL_WIDTH = 210; // px, expanded
+  var STRIP_WIDTH = 56; // px, collapsed to icons (a touch wider so indented sub-page icons still fit)
+  var COLLAPSE_KEY = "lwr-collapsed";
+
+  // Does `pageUrl` answer? All mod listeners share this origin, so a relative GET either hits the
+  // mod's real page (200) or, if the mod isn't installed, gets SPT's fallback (not ok). We only read
+  // .ok, never the body.
+  function probe(mod) {
+    return fetch(mod.pageUrl, { method: "GET", cache: "no-store" })
+      .then(function (res) { return res.ok ? mod : null; })
+      .catch(function () { return null; });
+  }
+
+  // The non-Leaves mods that also ship a web UI, detected server-side (folder presence under
+  // user/mods) and returned by LeavesUtils at /webui/rail/neighbors. We can't reliably probe these
+  // from here ourselves - RaidReview in particular is a separate http server on another port, which an
+  // https page can't fetch at all (mixed content) - so the server does the detection and we just render
+  // whatever it reports. Each entry is { name, icon, url, external }; external ones open in a new tab.
+  // Any failure (endpoint missing on an older LeavesUtils, bad JSON) resolves to an empty list.
+  function fetchNeighbors() {
+    return fetch("/webui/rail/neighbors", { method: "GET", cache: "no-store" })
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (list) { return Array.isArray(list) ? list : []; })
+      .catch(function () { return []; });
+  }
+
+  // A sub-tree mod's own nav manifest (see MODS comment). Only called when the row has `navUrl`.
+  // Any failure - endpoint missing, non-200, bad JSON - resolves to null, and the mod falls back to
+  // a flat row. Shape is trusted loosely; missing fields are defaulted at render time.
+  function fetchNav(mod) {
+    return fetch(mod.navUrl, { method: "GET", cache: "no-store" })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (nav) { return (nav && typeof nav === "object") ? nav : null; })
+      .catch(function () { return null; });
+  }
+
+  // ---- accident lock -------------------------------------------------------------------
+  // Entries flagged `locked: true` are greyed out and unclickable until the user enters the password
+  // LeavesUtil's WebUI_LockPassword config holds. All checking is client-side: the server only hands
+  // us the SHA-256 of the password. A cleared lock lives in sessionStorage, so it's gone when the tab
+  // closes. This is accident protection, not security - the direct URL still works.
+  var LOCK_KEY = "lwr-unlocked";
+  var lockHash = null; // hex SHA-256 from /webui/lock, or null when the feature is off
+
+  function lockCleared() {
+    try {
+      return sessionStorage.getItem(LOCK_KEY) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Lock configured (server sent a hash) and not yet cleared this session.
+  function lockActive() {
+    return lockHash != null && !lockCleared();
+  }
+
+  // { enabled, hash } from LeavesUtil, or null (feature off / older LeavesUtil / fetch failed).
+  function fetchLock() {
+    return fetch("/webui/lock", { method: "GET", cache: "no-store" })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (o) { return (o && o.enabled === true && o.hash) ? o : null; })
+      .catch(function () { return null; });
+  }
+
+  // hex SHA-256 of `str`. crypto.subtle needs a secure context; the web UI is always https/localhost.
+  function sha256Hex(str) {
+    var bytes = new TextEncoder().encode(str);
+    return crypto.subtle.digest("SHA-256", bytes).then(function (buf) {
+      var view = new Uint8Array(buf);
+      var out = "";
+      for (var i = 0; i < view.length; i++) {
+        out += view[i].toString(16).padStart(2, "0");
+      }
+      return out;
+    });
+  }
+
+  // Is this page the one a rail entry points at? Exact pathname match (trailing slash ignored), so two
+  // entries that share a first path segment (e.g. /webui/db and /webui/dev/routes) don't both light up.
+  function isActive(pageUrl) {
+    var here = window.location.pathname.replace(/\/+$/, "");
+    var target = (pageUrl || "").replace(/\/+$/, "");
+    return here === target;
+  }
+
+  // Split "/questrandomizer/ui#reroll" -> { path: "/questrandomizer/ui", hash: "#reroll" }. Trailing
+  // slashes on the path are normalised away so it compares cleanly with location.pathname.
+  function splitHref(href) {
+    var s = String(href || "");
+    var i = s.indexOf("#");
+    var path = (i === -1 ? s : s.slice(0, i)).replace(/\/+$/, "");
+    var hash = i === -1 ? "" : s.slice(i);
+    return { path: path, hash: hash };
+  }
+
+  // Does the current location match this sub-tree child? Same-page tabs use a hash (#search); real
+  // sub-pages have none. A hashless location on the parent page counts as the manifest's `home`.
+  function isActiveChild(href, homeHref) {
+    var here = window.location.pathname.replace(/\/+$/, "");
+    var loc = window.location.hash || "";
+    var t = splitHref(href);
+    if (t.path !== here) {
+      return false;
+    }
+    if (t.hash) {
+      return loc === t.hash || (loc === "" && String(href) === String(homeHref));
+    }
+    return loc === "";
+  }
+
+  // Is the current page anywhere under this mod (so its sub-tree should auto-expand)?
+  function isActiveMod(mod) {
+    return window.location.pathname.indexOf("/" + mod.slug + "/") === 0;
+  }
+
+  function injectStyles() {
+    if (document.getElementById("lwr-styles")) {
+      return;
+    }
+    var css =
+      "#lwr-rail{position:fixed;top:0;right:0;height:100vh;width:" + RAIL_WIDTH + "px;" +
+      "box-sizing:border-box;z-index:2147483000;display:flex;flex-direction:column;" +
+      "background:#161616;border-left:1px solid #333;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;" +
+      "color:#ddd;transition:width .12s ease;overflow:hidden;}" +
+      "#lwr-rail.lwr-collapsed{width:" + STRIP_WIDTH + "px;}" +
+      "#lwr-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #333;" +
+      "font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8a8a8a;white-space:nowrap;}" +
+      "#lwr-rail.lwr-collapsed #lwr-title{display:none;}" +
+      "#lwr-toggle{margin-left:auto;cursor:pointer;background:none;border:none;color:#8a8a8a;font-size:16px;" +
+      "line-height:1;padding:2px 4px;border-radius:4px;}" +
+      "#lwr-toggle:hover{background:#2a2a2a;color:#ddd;}" +
+      "#lwr-rail.lwr-collapsed #lwr-toggle{margin:0 auto;}" +
+      "#lwr-list{list-style:none;margin:0;padding:6px;overflow-y:auto;flex:1;}" +
+      "#lwr-devlist{list-style:none;margin:0;padding:6px;flex:0 0 auto;}" +
+      ".lwr-item{display:flex;align-items:center;gap:10px;padding:9px 10px;margin:2px 0;border-radius:6px;" +
+      "text-decoration:none;color:#ccc;font-size:14px;white-space:nowrap;cursor:pointer;}" +
+      ".lwr-item:hover{background:#242424;color:#fff;}" +
+      ".lwr-item.lwr-active{background:#2f3d2f;color:#cdeecd;font-weight:600;}" +
+      // Accident-locked row: the link fades and its label goes italic, but the padlock beside it stays
+      // full strength. The padlock drops out of the collapsed icon strip (the link is still blocked).
+      ".lwr-lockrow{display:flex;align-items:center;margin:2px 0;}" +
+      ".lwr-lockrow .lwr-item{flex:1;min-width:0;margin:0;}" +
+      ".lwr-lockrow .lwr-item.lwr-locked{opacity:.4;font-style:italic;}" +
+      ".lwr-lockbtn{flex:0 0 auto;cursor:pointer;background:none;border:none;color:#c8843c;" +
+      "font-size:12px;line-height:1;padding:8px;}" +
+      ".lwr-lockbtn:hover{color:#d9954d;}" +
+      "#lwr-rail.lwr-collapsed .lwr-lockbtn{display:none;}" +
+      "#lwr-lockpop{position:fixed;top:44px;right:0;width:" + RAIL_WIDTH + "px;box-sizing:border-box;" +
+      "z-index:2147483001;background:#1e1e1e;border:1px solid #3a3a3a;border-right:none;" +
+      "padding:10px 12px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:none;}" +
+      "#lwr-lockpop label{display:block;font-size:11px;color:#8a8a8a;text-transform:uppercase;" +
+      "letter-spacing:.04em;margin-bottom:6px;}" +
+      "#lwr-lockpop input{width:100%;box-sizing:border-box;background:#111;border:1px solid #3a3a3a;" +
+      "color:#ddd;font-size:13px;padding:6px 8px;border-radius:4px;outline:none;}" +
+      "#lwr-lockpop input:focus{border-color:#c8843c;}" +
+      "#lwr-lockpop input.lwr-bad{border-color:#c0392b;background:#2a1512;}" +
+      ".lwr-icon{font-size:18px;line-height:1;flex:0 0 auto;width:20px;text-align:center;}" +
+      "#lwr-rail.lwr-collapsed .lwr-label{display:none;}" +
+      ".lwr-section{padding:10px 10px 4px;margin-top:6px;border-top:1px solid #2a2a2a;font-size:11px;" +
+      "font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#6f6f6f;white-space:nowrap;}" +
+      "#lwr-rail.lwr-collapsed .lwr-section{font-size:0;padding:6px 0;border-top:1px solid #2a2a2a;}" +
+      // Sub-tree group: a caret sits INSIDE the parent row (so it shares the active highlight), an
+      // indented child list below it. When open, hairline dividers bracket the parent + children so
+      // the block reads apart from the flat rows around it (no top rule if it's the first entry).
+      ".lwr-group{margin:0;}" +
+      ".lwr-group:not(.lwr-collapsed-group){border-top:1px solid #333;border-bottom:1px solid #333;margin:5px 0;}" +
+      "#lwr-list>.lwr-group:first-child:not(.lwr-collapsed-group){border-top:none;margin-top:0;}" +
+      // Small glyph, but a generous click target: padding grows the hit-box, negative margins pull the
+      // surrounding layout back so the caret still looks like it sits snug before the icon. Coloured the
+      // suite's primary orange (base.css --accent) in every state, active pill included.
+      ".lwr-caret{flex:0 0 auto;cursor:pointer;color:#c8843c;font-size:12px;line-height:1;" +
+      "text-align:center;padding:9px 8px;margin:-9px -4px -9px -6px;user-select:none;}" +
+      ".lwr-caret:hover{color:#d9954d;}" +
+      ".lwr-children{list-style:none;margin:0;padding:0 0 4px;}" +
+      ".lwr-child{position:relative;padding:7px 10px 7px 30px;font-size:13px;color:#bbb;}" +
+      ".lwr-child .lwr-icon{font-size:14px;width:18px;}" +
+      ".lwr-child:hover{color:#fff;}" +
+      // A chevron in the left gutter of the sub-page you're actually on - matches the parent caret's orange.
+      ".lwr-child.lwr-active::before{content:'›';position:absolute;left:13px;top:50%;" +
+      "transform:translateY(-50%);color:#c8843c;font-weight:700;font-size:13px;}" +
+      // Same marker in the icon strip, tucked against the left edge so it clears the icon.
+      "#lwr-rail.lwr-collapsed .lwr-child.lwr-active::before{left:3px;font-size:11px;}" +
+      ".lwr-group.lwr-collapsed-group .lwr-children{display:none;}" +
+      // Collapsed rail: drop the caret, but KEEP the sub-page icons - just re-indent them so they still
+      // read as children of the mod icon above.
+      "#lwr-rail.lwr-collapsed .lwr-caret{display:none;}" +
+      "#lwr-rail.lwr-collapsed .lwr-child{padding-left:18px;padding-right:4px;}" +
+      "#lwr-empty{padding:12px;font-size:12px;color:#777;}";
+    var style = document.createElement("style");
+    style.id = "lwr-styles";
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function applyBodyOffset(width) {
+    // Push the page over so nothing hides behind the rail. On ultrawide this is free space.
+    document.body.style.marginRight = width + "px";
+  }
+
+
+  function build(installed, neighbors, devTools, navBySlug) {
+    injectStyles();
+    neighbors = neighbors || [];
+    devTools = (devTools || []).slice();
+    navBySlug = navBySlug || {};
+
+    // Child <a>s of every sub-tree, kept so a hashchange (page tab switch) can re-light the right one
+    // without a rebuild. Each: { el, href, home }.
+    var childRows = [];
+
+    // Locked <a>s + their padlock buttons, so clearing the lock can sweep them all back to normal.
+    var lockedRows = [];
+
+    // A locked entry: faded <a> whose clicks open the prompt instead of navigating, with a 🔒 button
+    // beside it. Returns the <li class="lwr-lockrow"> wrapper to append in place of a plain row.
+    function makeLockRow(anchor) {
+      anchor.classList.add("lwr-locked");
+      anchor.addEventListener("click", function (e) {
+        if (!lockCleared()) {
+          e.preventDefault();
+          openLockPrompt();
+        }
+      });
+
+      var li = document.createElement("li");
+      li.className = "lwr-lockrow";
+
+      var pad = document.createElement("button");
+      pad.type = "button";
+      pad.className = "lwr-lockbtn";
+      pad.textContent = "🔒";
+      pad.title = "Locked - click to unlock";
+      pad.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openLockPrompt();
+      });
+
+      li.appendChild(anchor);
+      li.appendChild(pad);
+      lockedRows.push({ anchor: anchor, pad: pad });
+      return li;
+    }
+
+    function clearLockVisuals() {
+      for (var i = 0; i < lockedRows.length; i++) {
+        lockedRows[i].anchor.classList.remove("lwr-locked");
+        var pad = lockedRows[i].pad;
+        if (pad && pad.parentNode) {
+          pad.parentNode.removeChild(pad);
+        }
+      }
+      var pop = document.getElementById("lwr-lockpop");
+      if (pop) {
+        pop.style.display = "none";
+      }
+    }
+
+    function openLockPrompt() {
+      var pop = document.getElementById("lwr-lockpop");
+      if (!pop) {
+        pop = document.createElement("div");
+        pop.id = "lwr-lockpop";
+        var label = document.createElement("label");
+        label.textContent = "Password to unlock";
+        var input = document.createElement("input");
+        input.type = "password";
+        input.autocomplete = "off";
+        input.addEventListener("keydown", function (e) {
+          if (e.key === "Escape") {
+            pop.style.display = "none";
+            return;
+          }
+          if (e.key !== "Enter") {
+            return;
+          }
+          var attempt = input.value;
+          sha256Hex(attempt).then(function (hex) {
+            if (lockHash && hex === lockHash) {
+              try { sessionStorage.setItem(LOCK_KEY, "1"); } catch (err) {}
+              clearLockVisuals();
+            } else {
+              input.classList.add("lwr-bad");
+              input.select();
+              setTimeout(function () { input.classList.remove("lwr-bad"); }, 700);
+            }
+          });
+        });
+        pop.appendChild(label);
+        pop.appendChild(input);
+        document.body.appendChild(pop);
+      }
+      pop.style.display = "block";
+      var box = pop.querySelector("input");
+      box.value = "";
+      box.focus();
+    }
+
+    var collapsed = localStorage.getItem(COLLAPSE_KEY) === "1";
+
+    var rail = document.createElement("nav");
+    rail.id = "lwr-rail";
+    if (collapsed) {
+      rail.className = "lwr-collapsed";
+    }
+
+    var head = document.createElement("div");
+    head.id = "lwr-head";
+    var title = document.createElement("span");
+    title.id = "lwr-title";
+    title.textContent = "Leaves Mods";
+    var toggle = document.createElement("button");
+    toggle.id = "lwr-toggle";
+    toggle.type = "button";
+    toggle.title = "Collapse / expand";
+    toggle.textContent = collapsed ? "«" : "»"; // « »
+    head.appendChild(title);
+    head.appendChild(toggle);
+    rail.appendChild(head);
+
+    var list = document.createElement("ul");
+    list.id = "lwr-list";
+
+    // Builds one row: an <a> with an icon + label. `active` highlights the current page; `external`
+    // opens the link in a new tab (used for neighbor mods that live on their own port/server).
+    function makeItem(href, name, iconText, active, external) {
+      var item = document.createElement("a");
+      item.className = "lwr-item";
+      if (active) {
+        item.className += " lwr-active";
+      }
+      item.href = href;
+      item.title = name;
+      if (external) {
+        item.target = "_blank";
+        item.rel = "noopener";
+      }
+
+      var icon = document.createElement("span");
+      icon.className = "lwr-icon";
+      icon.textContent = iconText;
+      var label = document.createElement("span");
+      label.className = "lwr-label";
+      label.textContent = name;
+
+      item.appendChild(icon);
+      item.appendChild(label);
+      return item;
+    }
+
+    // A mod that shipped a nav manifest: parent row + caret + an indented child list. `nav` is
+    // { label, icon, home, children:[{label,href}] }. Returns the <li class="lwr-group"> wrapper.
+    function makeGroup(mod, nav) {
+      var wrap = document.createElement("li");
+      wrap.className = "lwr-group";
+
+      var home = nav.home || mod.pageUrl;
+      var activeMod = isActiveMod(mod);
+      // Selecting a mod always opens its sub-tree; every other group stays closed. The caret can still
+      // fold it away for the current view, but that's not remembered - navigate back to the mod and it
+      // re-opens.
+      var expanded = activeMod;
+      if (!expanded) {
+        wrap.className += " lwr-collapsed-group";
+      }
+
+      // Parent row lights whenever you're anywhere under this mod - handy when the group is collapsed
+      // or shown as an icon strip; the specific child also lights when the group is open. The caret
+      // lives INSIDE the row's <a> (first child, before the icon) so it sits within that highlight;
+      // its own click toggles the group without navigating.
+      var parentRow = makeItem(home, nav.label || mod.name, nav.icon || mod.icon, activeMod, false);
+      var caret = document.createElement("span");
+      caret.className = "lwr-caret";
+      caret.title = "Expand / collapse";
+      caret.textContent = expanded ? "▾" : "▸"; // ▾ ▸
+      caret.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var nowCollapsed = wrap.classList.toggle("lwr-collapsed-group");
+        caret.textContent = nowCollapsed ? "▸" : "▾";
+      });
+      parentRow.insertBefore(caret, parentRow.firstChild);
+      wrap.appendChild(parentRow);
+
+      var kids = document.createElement("ul");
+      kids.className = "lwr-children";
+      var children = nav.children || [];
+      for (var c = 0; c < children.length; c++) {
+        var ch = children[c];
+        var row = makeItem(ch.href, ch.label, ch.icon || "", isActiveChild(ch.href, home), false);
+        row.className += " lwr-child";
+        kids.appendChild(row);
+        childRows.push({ el: row, href: ch.href, home: home });
+      }
+      wrap.appendChild(kids);
+      return wrap;
+    }
+
+    // Fold each manifest's devTools into the Dev Utils list (no probe needed - the manifest only
+    // loaded because the mod is installed).
+    for (var s = 0; s < installed.length; s++) {
+      var mnav = navBySlug[installed[s].slug];
+      if (mnav && mnav.devTools) {
+        for (var t2 = 0; t2 < mnav.devTools.length; t2++) {
+          var dt = mnav.devTools[t2];
+          devTools.push({ pageUrl: dt.href, name: dt.label, icon: dt.icon || "🛠️" });
+        }
+      }
+    }
+
+    if (installed.length === 0 && neighbors.length === 0 && devTools.length === 0) {
+      var empty = document.createElement("li");
+      empty.id = "lwr-empty";
+      empty.textContent = "No mod UIs found.";
+      list.appendChild(empty);
+    } else {
+      for (var i = 0; i < installed.length; i++) {
+        var mod = installed[i];
+        var nav = navBySlug[mod.slug];
+        if (nav) {
+          list.appendChild(makeGroup(mod, nav));
+        } else if (mod.locked && lockActive()) {
+          list.appendChild(makeLockRow(makeItem(mod.pageUrl, mod.name, mod.icon, isActive(mod.pageUrl), false)));
+        } else {
+          list.appendChild(makeItem(mod.pageUrl, mod.name, mod.icon, isActive(mod.pageUrl), false));
+        }
+      }
+
+      // Non-Leaves mods that also have a web UI, under their own "Other mods" heading. These are
+      // outbound links (the neighbor page won't carry this rail back), and external ones open a new tab.
+      if (neighbors.length > 0) {
+        var section = document.createElement("li");
+        section.className = "lwr-section";
+        section.textContent = "Other mods";
+        list.appendChild(section);
+
+        for (var n = 0; n < neighbors.length; n++) {
+          var nb = neighbors[n];
+          list.appendChild(makeItem(nb.url, nb.name, nb.icon, false, nb.external === true));
+        }
+      }
+    }
+    rail.appendChild(list);
+
+    // Dev tools live in their own list AFTER the scrollable mod list. Because the mod list is flex:1 it eats
+    // the slack, so this block hugs the bottom of the rail and grows upward as tools are added.
+    if (devTools.length > 0) {
+      var devWrap = document.createElement("ul");
+      devWrap.id = "lwr-devlist";
+
+      var devSection = document.createElement("li");
+      devSection.className = "lwr-section";
+      devSection.textContent = "Dev Utils";
+      devWrap.appendChild(devSection);
+
+      // The whole Dev Utils section is locked when a lock is active - no per-entry flag.
+      var devLocked = lockActive();
+      for (var d = 0; d < devTools.length; d++) {
+        var tool = devTools[d];
+        var devRow = makeItem(tool.pageUrl, tool.name, tool.icon, isActive(tool.pageUrl), false);
+        devWrap.appendChild(devLocked ? makeLockRow(devRow) : devRow);
+      }
+      rail.appendChild(devWrap);
+    }
+
+    toggle.addEventListener("click", function () {
+      var nowCollapsed = rail.classList.toggle("lwr-collapsed");
+      localStorage.setItem(COLLAPSE_KEY, nowCollapsed ? "1" : "0");
+      toggle.textContent = nowCollapsed ? "«" : "»";
+      applyBodyOffset(nowCollapsed ? STRIP_WIDTH : RAIL_WIDTH);
+    });
+
+    // Same-page tab switches (e.g. #search -> #reroll on the Questrandomizer page) only change the
+    // hash, so re-light the matching child row instead of leaving the old one highlighted.
+    if (childRows.length > 0) {
+      window.addEventListener("hashchange", function () {
+        for (var r = 0; r < childRows.length; r++) {
+          var cr = childRows[r];
+          var on = isActiveChild(cr.href, cr.home);
+          cr.el.classList.toggle("lwr-active", on);
+        }
+      });
+    }
+
+    document.body.appendChild(rail);
+    applyBodyOffset(collapsed ? STRIP_WIDTH : RAIL_WIDTH);
+  }
+
+  // ---- Ctrl+F / Esc search shortcuts ---------------------------------------------------
+  // Every mod page has one or more text search boxes. Ctrl+F (Cmd+F on Mac) focuses the page's
+  // search box instead of opening the browser's native Find bar; Esc clears it and then steps
+  // out. Tabbed pages (debug, reroll) keep several search inputs in the DOM but hide all but the
+  // active tab's, so we only consider *visible* ones and naturally land on the right box. If a
+  // page has no search box we DON'T preventDefault, so the browser's own Find still works there.
+
+  function isVisible(el) {
+    // offsetParent is null for anything display:none (including the hidden tabs' inputs), which
+    // is exactly what we want to skip. None of our search boxes are position:fixed (that would
+    // also null offsetParent), so this stays a reliable "is this actually on screen" check.
+    return el.offsetParent !== null && el.getClientRects().length > 0;
+  }
+
+  function looksLikeSearch(el) {
+    var hay = (el.id + " " + el.name + " " + el.placeholder + " " + el.className).toLowerCase();
+    if (hay.indexOf("search") !== -1) { return true; }
+    if (hay.indexOf("filter") !== -1) { return true; }
+    if (hay.indexOf("find") !== -1) { return true; }
+    if (el.id === "q") { return true; } // handbook's category filter is just id="q"
+    return false;
+  }
+
+  // The page's current search box: the first visible text input that looks like a search field,
+  // or failing that the first visible text input at all. null if the page has none.
+  function findSearchBox() {
+    var inputs = document.querySelectorAll("input");
+    var firstText = null;
+    for (var i = 0; i < inputs.length; i++) {
+      var el = inputs[i];
+      var type = (el.type || "text").toLowerCase();
+      if (type !== "text" && type !== "search") {
+        continue;
+      }
+      if (!isVisible(el)) {
+        continue;
+      }
+      if (looksLikeSearch(el)) {
+        return el;
+      }
+      if (firstText === null) {
+        firstText = el;
+      }
+    }
+    return firstText;
+  }
+
+  function onKeyDown(e) {
+    var key = e.key ? e.key.toLowerCase() : "";
+
+    // Ctrl/Cmd+F -> jump into the page's search box (select-all so typing replaces, like the
+    // native Find field). Alt held = some other combo, leave it alone.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && key === "f") {
+      var box = findSearchBox();
+      if (box === null) {
+        return; // nothing to focus here - let the browser open its own Find bar
+      }
+      e.preventDefault();
+      box.focus();
+      box.select();
+      return;
+    }
+
+    // Esc in a search box: first press clears it (which resets the page's filter to show
+    // everything), a second press (now empty) blurs back out.
+    if (key === "escape") {
+      var active = document.activeElement;
+      if (active && active.tagName === "INPUT" && looksLikeSearch(active)) {
+        if (active.value !== "") {
+          active.value = "";
+          // Fire the same 'input' event a keystroke would, so the page's own filter re-runs.
+          active.dispatchEvent(new Event("input", { bubbles: true }));
+        } else {
+          active.blur();
+        }
+      }
+    }
+  }
+
+  function installSearchShortcuts() {
+    document.addEventListener("keydown", onKeyDown);
+  }
+
+  function start() {
+    installSearchShortcuts();
+    var probes = [];
+    for (var i = 0; i < MODS.length; i++) {
+      probes.push(probe(MODS[i]));
+    }
+    var devProbes = [];
+    for (var d = 0; d < DEV_TOOLS.length; d++) {
+      devProbes.push(probe(DEV_TOOLS[d]));
+    }
+    // Nav manifests for the sub-tree mods, indexed parallel to MODS (null for rows without navUrl).
+    var navFetches = [];
+    for (var m = 0; m < MODS.length; m++) {
+      navFetches.push(MODS[m].navUrl ? fetchNav(MODS[m]) : Promise.resolve(null));
+    }
+    // Probe the Leaves mods + dev tools, pull sub-tree manifests, ask the server for neighbor mods + lock state - all at once.
+    Promise.all([Promise.all(probes), fetchNeighbors(), Promise.all(devProbes), Promise.all(navFetches), fetchLock()]).then(function (all) {
+      var results = all[0];
+      var neighbors = all[1];
+      var devResults = all[2];
+      var navResults = all[3];
+      lockHash = all[4] ? all[4].hash : null;
+      var installed = [];
+      var navBySlug = {};
+      for (var j = 0; j < results.length; j++) {
+        if (results[j]) {
+          installed.push(results[j]);
+          if (navResults[j]) {
+            navBySlug[MODS[j].slug] = navResults[j];
+          }
+        }
+      }
+      var devTools = [];
+      for (var k = 0; k < devResults.length; k++) {
+        if (devResults[k]) {
+          devTools.push(devResults[k]);
+        }
+      }
+      // Nothing reachable at all (shouldn't happen - we're being served from one of them) - stay out
+      // of the way rather than paint an empty rail.
+      if (installed.length > 0 || neighbors.length > 0 || devTools.length > 0) {
+        build(installed, neighbors, devTools, navBySlug);
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();

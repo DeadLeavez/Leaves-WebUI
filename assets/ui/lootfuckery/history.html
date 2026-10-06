@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LootFuckery — real-run history</title>
+<link rel="stylesheet" href="/webui/base.css">
+<style>
+  /* palette tokens, body baseline, .muted and mark come from the shared /webui/base.css (linked first). */
+  * { box-sizing: border-box; }
+
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+           padding:14px 20px; background:#16181c; border-bottom:1px solid #2a2d34; }
+  header h1 { font-size:17px; margin:0; }
+  .meta { color:#9aa0a6; font-size:12.5px; }
+  .spacer { flex:1; }
+  a { color:#e8b04b; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+
+  button, select, input[type=text] { background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46;
+                                     border-radius:6px; padding:7px 10px; font-size:13.5px; }
+  button { cursor:pointer; }
+  button:hover { border-color:#5a5f68; }
+
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px 20px;
+         border-bottom:1px solid #2a2d34; }
+  #search { flex:1; min-width:200px; }
+
+  .stats { display:flex; gap:22px; flex-wrap:wrap; padding:12px 20px; border-bottom:1px solid #2a2d34; }
+  .stat b { display:block; font-size:18px; }
+  .stat span { color:#9aa0a6; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; }
+
+  main { padding:14px 20px 40px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:7px 12px; font-size:13px; border-top:1px solid #22252b; }
+  th { color:#9aa0a6; font-weight:500; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; cursor:pointer; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tbody tr:hover { background:#20242a; }
+  .mono { font-family:ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .map { color:#c8843c; font-weight:600; }
+  .empty { color:#9aa0a6; padding:40px 12px; text-align:center; }
+</style>
+<!-- Shared cross-mod nav rail (Leaves-WebUI). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+</head>
+<body>
+
+<header>
+  <h1>LootFuckery — real-run history</h1>
+  <div class="meta" id="meta">loading…</div>
+  <div class="spacer"></div>
+  <a href="/lootfuckery/ui/dump">→ Dump viewer</a>
+</header>
+
+<div class="bar">
+  <input type="text" id="search" placeholder="Search map or player…" autocomplete="off">
+  <select id="mapFilter"><option value="">All maps</option></select>
+  <button id="refresh">↻ Refresh</button>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<main>
+  <div id="list"></div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const rxEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const fmt = n => (Number(n) || 0).toLocaleString();
+function hl(text, f) {
+  const e = esc(text);
+  const terms = LeavesSearch.terms(f);
+  if (!terms.length) return e;
+  const rx = terms.map(t => rxEsc(esc(t))).join('|');
+  return e.replace(new RegExp(rx, 'gi'), m => `<mark>${m}</mark>`);
+}
+// "2026-08-04T06:49:17.000Z" -> "2026-08-04 06:49:17" (drop the T and fractional seconds).
+const prettyTime = s => esc(String(s ?? '').replace('T', ' ').slice(0, 19));
+
+let runs = [];
+let sortKey = 'capturedUtc', sortDir = -1; // newest first by default
+
+function load() {
+  $('#meta').textContent = 'loading…';
+  fetch('/lootfuckery/api/runs').then(r => r.json()).then(data => {
+    runs = Array.isArray(data) ? data : [];
+    // Populate the map filter from whatever maps are present.
+    const maps = [...new Set(runs.map(r => r.map))].sort();
+    const cur = $('#mapFilter').value;
+    $('#mapFilter').innerHTML = '<option value="">All maps</option>'
+      + maps.map(m => `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
+    render();
+  }).catch(e => {
+    $('#meta').textContent = 'server API unavailable';
+    $('#list').innerHTML = `<div class="empty">Couldn't reach the run API (${esc(e.message || e)}).<br>
+      Open this page from the running server at <span class="mono">/lootfuckery/ui/history</span>.</div>`;
+  });
+}
+
+function render() {
+  const f = $('#search').value.toLowerCase().trim();
+  const mapF = $('#mapFilter').value;
+  let rows = runs.filter(r =>
+    (!mapF || r.map === mapF) &&
+    LeavesSearch.test((r.map || '') + ' ' + (r.player || ''), f));
+
+  rows = rows.slice().sort((a, b) => {
+    let x = a[sortKey], y = b[sortKey];
+    if (typeof x === 'string') { x = x || ''; y = y || ''; return sortDir * x.localeCompare(y); }
+    return sortDir * ((x || 0) - (y || 0));
+  });
+
+  // ---- stats ----
+  const totalPoints = runs.reduce((s, r) => s + (r.lootPoints || 0), 0);
+  const players = new Set(runs.map(r => r.player)).size;
+  const maps = new Set(runs.map(r => r.map)).size;
+  $('#stats').innerHTML = [
+    ['Captured runs', fmt(runs.length)],
+    ['Maps', fmt(maps)],
+    ['Players', fmt(players)],
+    ['Total loot points', fmt(totalPoints)],
+  ].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+  $('#meta').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'} recorded`
+    + (rows.length !== runs.length ? ` · ${rows.length} shown` : '');
+
+  // ---- table ----
+  if (!rows.length) {
+    $('#list').innerHTML = runs.length
+      ? '<div class="empty">No runs match the current filter.</div>'
+      : `<div class="empty">No real runs captured yet.<br>
+         Start a raid with <span class="mono">captureRealRuns</span> enabled and it'll show up here.</div>`;
+    return;
+  }
+  const arrow = k => sortKey === k ? (sortDir < 0 ? ' ▾' : ' ▴') : '';
+  $('#list').innerHTML = `<table><thead><tr>
+      <th data-k="capturedUtc">Captured (UTC)${arrow('capturedUtc')}</th>
+      <th data-k="map">Map${arrow('map')}</th>
+      <th data-k="player">Player${arrow('player')}</th>
+      <th class="num" data-k="lootPoints">Loot points${arrow('lootPoints')}</th>
+      <th class="num" data-k="itemCount">Items${arrow('itemCount')}</th>
+      <th>Raw</th></tr></thead><tbody>`
+    + rows.map(r => `<tr>
+        <td class="mono">${prettyTime(r.capturedUtc)}</td>
+        <td class="map">${hl(r.map, f)}</td>
+        <td>${hl(r.player, f)}</td>
+        <td class="num">${fmt(r.lootPoints)}</td>
+        <td class="num muted">${fmt(r.itemCount)}</td>
+        <td><a href="/lootfuckery/api/run?file=${encodeURIComponent(r.file)}" target="_blank" rel="noopener">view</a></td>
+      </tr>`).join('')
+    + '</tbody></table>';
+}
+
+// Sort when a header is clicked (toggle direction on the active column).
+$('#list').addEventListener('click', e => {
+  const th = e.target.closest('th[data-k]');
+  if (!th) return;
+  const k = th.dataset.k;
+  if (sortKey === k) { sortDir = -sortDir; } else { sortKey = k; sortDir = (k === 'capturedUtc') ? -1 : 1; }
+  render();
+});
+let searchTimer;
+$('#search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(render, 120); });
+$('#mapFilter').addEventListener('change', render);
+$('#refresh').addEventListener('click', load);
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,211 @@
+/*
+ * Shared client helpers for the BarterEconomy Trades + Search pages, served at /bartereconomy/ui/common.js
+ * (stored on disk as common.txt so SPT's ModValidator doesn't reject the mod folder as a legacy JS mod -
+ * same trick as LeavesUtils' rail.txt). Loaded as a plain <script> BEFORE each page's own inline script,
+ * so these top-level declarations are visible to it. Pure rendering helpers only - page state lives per page.
+ */
+"use strict";
+
+// Ref (Arena) trades almost entirely in GP coin (a money id) plus Lega Medals, so a "hide money" filter
+// deliberately skips him - both pages check this id.
+const REF_ID = "6617beeaa9cfa777ca915b7c";
+
+// Payment currency ids -> display symbol (₽ / $ / € / GP).
+const CURRENCY = {
+  "5449016a4bdc2d6f028b456f": "₽",
+  "5696686a4bdc2da3951b456a": "$",
+  "569668774bdc2da2298b4568": "€",
+  "5d235b4d86f7742e017bc88a": "GP"
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Boolean &/| search via the shared LeavesSearch (from rail.js) once it's loaded; plain substring before then.
+function matches(hay, q) {
+  if (window.LeavesSearch) return window.LeavesSearch.test(hay, q);
+  q = (q || "").toLowerCase().trim();
+  return !q || hay.indexOf(q) !== -1;
+}
+
+// Payment counts are quantities you actually hand over, so a fractional cost (seen in GP valuations)
+// is rounded UP - you can't pay 64.87 GP, and rounding up keeps the trade honestly affordable.
+function fmtCount(n) {
+  return Math.ceil(n).toLocaleString();
+}
+
+// Item display names can carry BSG <color> markup; strip it for display.
+function cleanName(n) {
+  return String(n).replace(/<\/?color[^>]*>/gi, "").replace(/\s+/g, " ").trim();
+}
+
+// Stock badge for one trade row. `stock` is the trader's CURRENT stock (the live DB assort count, which
+// LimitedTraders rewrites each resupply - reduced amounts and random 0s), not a per-profile purchased-down
+// count. Unlimited-count trades show ∞ and never count as out of stock. A missing stock field (an old
+// pinned snapshot captured before this existed, or a stale pin whose live offer is gone) shows — (unknown),
+// NOT "out". Always returns a span so the row's stock column stays aligned.
+function stockHtml(t) {
+  if (t.unlimited) return '<span class="stock inf" title="Unlimited stock">∞</span>';
+  if (t.stock === undefined || t.stock === null) return '<span class="stock unk" title="Stock unknown">—</span>';
+  const n = Math.max(0, Math.floor(t.stock));
+  if (n <= 0) return '<span class="stock out" title="Out of stock">out</span>';
+  return '<span class="stock" title="' + n.toLocaleString() + ' in stock">' + n.toLocaleString() + '</span>';
+}
+
+function iconHtml(src, cls) {
+  if (!src) return "";
+  return '<img class="' + cls + '" src="' + escapeHtml(src) + '" alt="" onerror="this.style.display=\'none\'">';
+}
+
+// Optional "do I own this?" overlay. A page may set window.BE_STASH to a { <tpl>: <count> } map of a
+// player's stash (see the Trades page's stash picker). When it's set, non-currency payment items get a
+// have/lack class: "have" when the stash holds AT LEAST the quantity the barter needs, "lack" otherwise.
+// Left unset (null) = no overlay, no colouring. Uses ceil on the required count to match the display.
+function stashClass(p) {
+  if (!window.BE_STASH || p.currency) return "";
+  const have = window.BE_STASH[p.id] || 0;
+  return have >= Math.ceil(p.count) ? " have" : " lack";
+}
+
+function partHtml(p) {
+  const full = cleanName(p.name);
+  const label = cleanName(p.short || p.name);
+  if (p.currency) {
+    const sym = CURRENCY[p.id] || label;
+    // title shows the full currency name on hover (label is just the ₽/$/€/GP symbol).
+    return '<span class="part cur" title="' + escapeHtml(full) + '">' + fmtCount(p.count) + " " + escapeHtml(sym) + '</span>';
+  }
+  // Non-currency payment carries its item id/name so a page can make it clickable (the Search page's
+  // barter chain: click to look up who sells this item). Pages that don't wire it just render a plain part.
+  // We show the short name for compactness; title reveals the full name on hover. stashClass adds the
+  // optional have/lack colouring when a stash overlay is loaded.
+  return '<span class="part part-item' + stashClass(p) + '" title="' + escapeHtml(full) + '" data-item="' + escapeHtml(p.id) + '" data-name="' + escapeHtml(full) +
+         '" data-need="' + p.count + '">' + fmtCount(p.count) + "× " + escapeHtml(label) + '</span>';
+}
+
+// ---- Pinned barters (client-side only; persisted in localStorage) ----------------------------------
+// A "pin" bookmarks one specific offer so it collects on the Pinned page. Everything here is local to the
+// browser - no server round-trip, nothing written server-side. Storage is a single JSON array under
+// BE_PINS_KEY; each entry is a SELF-CONTAINED snapshot { key, traderId, traderNickname, traderAvatar,
+// trade, pinnedAt } so the Pinned page renders straight from storage (and still shows a barter you pinned
+// even after it re-rolls off the live trader). localStorage gives us ~5 MB per origin - a snapshot is a
+// few hundred bytes, so this comfortably holds thousands of pins.
+const BE_PINS_KEY = "be_pinned_barters";
+
+// Stable identity for one offer: trader + sold item + loyalty + cash/barter + its exact payment set. A
+// re-rolled barter has a different payment set, hence a different key - so it reads as "not pinned" on the
+// live pages while the old snapshot lingers on the Pinned page until you remove it there.
+function pinKey(traderId, t) {
+  const pay = (t.payment || []).map(p => p.id + ":" + Math.ceil(p.count)).sort().join(",");
+  return [traderId, t.itemId, t.loyalty || 0, t.cash ? 1 : 0, pay].join("|");
+}
+
+function loadPins() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(BE_PINS_KEY) || "[]");
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+function savePins(arr) {
+  try { localStorage.setItem(BE_PINS_KEY, JSON.stringify(arr)); } catch (e) {}
+}
+function isPinned(key) {
+  const pins = loadPins();
+  for (const p of pins) { if (p.key === key) return true; }
+  return false;
+}
+// Toggle a pin. `meta` = { id, nickname, avatar } for the trader offering `t`. Returns the new pinned state.
+function togglePin(meta, t) {
+  const key = pinKey(meta.id, t);
+  const next = [];
+  let found = false;
+  for (const p of loadPins()) {
+    if (p.key === key) { found = true; continue; } // present -> drop it (unpin)
+    next.push(p);
+  }
+  if (!found) {
+    next.push({ key: key, traderId: meta.id, traderNickname: meta.nickname || "", traderAvatar: meta.avatar || "", trade: t, pinnedAt: Date.now() });
+  }
+  savePins(next);
+  return !found;
+}
+
+// The little pin toggle that rides on each trade row. Rendered only when a page passes trader `meta`
+// (so tradeHtml stays backward-compatible where no meta is supplied). The whole snapshot is stashed in
+// data-pin so the delegated click handler is self-contained - no per-page lookup back to the trade object.
+function pinBtnHtml(meta, t) {
+  if (!meta || !meta.id) return "";
+  const on = isPinned(pinKey(meta.id, t));
+  return '<button type="button" class="pin' + (on ? " on" : "") + '" aria-pressed="' + (on ? "true" : "false") +
+         '" title="' + (on ? "Unpin this barter" : "Pin this barter") +
+         '" data-pin="' + escapeHtml(JSON.stringify({ meta: meta, trade: t })) + '">📌</button>';
+}
+
+// Wire the pin buttons once per page. Delegated on document so it covers rows rendered later. Optional
+// onToggle(key, state) lets a page react - the Pinned page re-renders itself to drop an unpinned row.
+function initPins(onToggle) {
+  document.addEventListener("click", function (e) {
+    const btn = e.target.closest(".pin");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    let payload;
+    try { payload = JSON.parse(btn.getAttribute("data-pin")); } catch (err) { return; }
+    const state = togglePin(payload.meta, payload.trade);
+    btn.classList.toggle("on", state);
+    btn.setAttribute("aria-pressed", state ? "true" : "false");
+    btn.title = state ? "Unpin this barter" : "Pin this barter";
+    if (onToggle) onToggle(pinKey(payload.meta.id, payload.trade), state);
+  });
+}
+
+// One trade row. `crumb` (optional) prepends a muted "Top › Sub" breadcrumb - used in search results where
+// there's no category grouping around the row. `meta` (optional { id, nickname, avatar }) enables the pin
+// button. `showTrader` (optional) prepends a small trader chip (avatar + name) - used on the Pinned page,
+// where rows are grouped by category rather than by trader, so each row still names its trader. Loyalty is
+// pinned far right as LL<n> + <n> stars, with the pin toggle after it.
+function tradeHtml(t, crumb, meta, showTrader) {
+  const name = cleanName(t.name);
+  const payHay = t.payment.map(p => p.name + " " + p.short).join(" ");
+  const traderHay = showTrader && meta ? " " + (meta.nickname || "") : "";
+  const hay = (name + " " + t.short + " " + (t.topName || "") + " " + (t.subName || "") + " " +
+               payHay + " " + (t.cash ? "cash" : "barter") + traderHay).toLowerCase();
+  const tag = t.cash ? '<span class="tag cash">cash</span>' : '<span class="tag barter">barter</span>';
+  const pay = t.payment.length ? t.payment.map(partHtml).join("") : '<span class="hint">—</span>';
+  const tchip = showTrader && meta
+    ? '<span class="tchip" title="' + escapeHtml(meta.nickname || meta.id) + '">' +
+        (meta.avatar ? iconHtml(meta.avatar, "tchip-img") : "") +
+        '<span>' + escapeHtml(meta.nickname || meta.id) + '</span></span>'
+    : "";
+  const cr = crumb && (t.topName || t.subName)
+    ? '<span class="crumb">' + escapeHtml([t.topName, t.subName].filter(Boolean).join(" › ")) + '</span>'
+    : "";
+  const ll = t.loyalty > 0
+    ? '<span class="ll"><span class="lbl">LL' + t.loyalty + '</span>' +
+      '<span class="stars">' + "★".repeat(t.loyalty) + '</span></span>'
+    : '<span class="ll"></span>';
+  // data-stock: -1 = unlimited, "?" = unknown (missing field) - neither counts as out of stock; otherwise
+  // the integer stock count ("0" = out). Used by the Trades/Search/Pinned "hide out of stock" filter.
+  let stockAttr;
+  if (t.unlimited) { stockAttr = -1; }
+  else if (t.stock === undefined || t.stock === null) { stockAttr = "?"; }
+  else { stockAttr = Math.max(0, Math.floor(t.stock)); }
+  // data-trader lets trader-aware filters (e.g. the Ref exemption on "hide money") work on pages that mix
+  // traders in one list (Pinned). Inert where meta isn't passed or the page ignores it.
+  const traderAttr = meta && meta.id ? meta.id : "";
+  return '<div class="trade" data-hay="' + escapeHtml(hay) + '" data-cash="' + (t.cash ? "1" : "0") +
+           '" data-ll="' + (t.loyalty || 0) + '" data-stock="' + stockAttr + '" data-trader="' + escapeHtml(traderAttr) + '">' +
+           '<span class="sold">' + tchip + cr +
+             '<span class="sname">' + escapeHtml(name) + '</span>' +
+             (t.short ? '<span class="sshort">' + escapeHtml(t.short) + '</span>' : '') +
+             tag +
+           '</span>' +
+           '<span class="arrow">→</span>' +
+           '<span class="pay">' + pay + '</span>' +
+           stockHtml(t) +
+           ll +
+           pinBtnHtml(meta, t) +
+         '</div>';
+}

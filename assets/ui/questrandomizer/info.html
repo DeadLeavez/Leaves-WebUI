@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questrandomizer — Req. Items</title>
+<link rel="stylesheet" href="/webui/base.css">
+<link rel="stylesheet" href="/questrandomizer/ui/styles.css">
+<!-- Optional cross-mod nav rail (Leaves-WebUI). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+<!-- Shared per-player turn-in listing (also used by the debug page's "All hand-ins" tab). -->
+<script src="/questrandomizer/ui/required-list.js"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>Questrandomizer</h1>
+    <div class="muted" style="font-size:13px;">Req. Items</div>
+    <div class="sidesep"></div>
+    <button class="tab navbtn active" data-tab="required">📋 Req. Items</button>
+    <div class="sidesep"></div>
+    <label class="admintoggle" title="Combine the same item needed with and without Found-in-Raid into one total"><input type="checkbox" id="mergefir"> Merge FiR / non-FiR</label>
+    <div class="sidenote">Everything every player still needs to hand over for their <b>active</b> quests, listed per player. Amounts already subtract whatever's been handed in, and completed turn-ins are gone. Quest items (mission pickups you can't buy) are excluded. Found-in-Raid needs are tagged separately (a FiR item can't be bought off the flea). Utility/headless accounts are excluded.</div>
+  </aside>
+  <main class="main">
+
+  <!-- REQUIRED ITEMS (cross-player turn-in list, grouped per player) -->
+  <div class="pane active" id="pane-required">
+    <div class="sub" id="req-sub">Loading…</div>
+    <div class="bar">
+      <input type="text" id="req-q" placeholder="Search player, item or quest…" autocomplete="off">
+    </div>
+    <div id="req-content"><div class="row muted">Loading…</div></div>
+    <div class="status" id="req-status"></div>
+  </div>
+
+  </main>
+</div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const LS = { mergefir: 'qr_info_mergefir', tab: 'qr_info_tab' };
+
+  const required = QrRequiredList({
+    dataUrl: () => '/questrandomizer/api/turnins',
+    content: '#req-content', sub: '#req-sub', status: '#req-status',
+    search: '#req-q', merge: '#mergefir', noun: 'outstanding turn-in'
+  });
+
+  // The merge choice is remembered across visits (and shared with the debug page's key).
+  $('#mergefir').checked = localStorage.getItem(LS.mergefir) === '1';
+  $('#mergefir').addEventListener('change', () => localStorage.setItem(LS.mergefir, $('#mergefir').checked ? '1' : ''));
+
+  // ---- Tabs (only "required" for now; adding one is a <button class="tab navbtn" data-tab="x"> + a
+  // #pane-x div + a branch in loadActive()). Mirrors the debug/re-roll pages. ----
+  function loadActive() {
+    if ($('#pane-required').classList.contains('active')) required.load();
+  }
+  function selectTab(name) {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+    const btn = document.querySelector('.tab[data-tab="' + name + '"]');
+    (btn || document.querySelector('.tab')).classList.add('active');
+    $('#pane-' + ((btn && name) || 'required')).classList.add('active');
+    loadActive();
+  }
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    selectTab(t.dataset.tab);
+    localStorage.setItem(LS.tab, t.dataset.tab);
+  }));
+
+  selectTab(localStorage.getItem(LS.tab) || 'required');
+</script>
+</body>
+</html>

@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaves Dev — Routes</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Opt in to the shared nav rail (no-op / 404 if the rail isn't reachable). -->
+<script defer src="/webui/rail.js"></script>
+<style>
+/* Palette tokens, body baseline and base link colour come from the shared /webui/base.css, linked above.
+   Only this page's own styling lives here. */
+* { box-sizing: border-box; }
+body { padding:0 22px 60px; }
+
+.topbar { display:flex; align-items:baseline; gap:14px; padding:16px 0 10px; border-bottom:1px solid #2a2d34; }
+.brand { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:18px; font-weight:700;
+  letter-spacing:.14em; text-transform:uppercase; color:#cbb089; }
+.brand .leaf { color:#c8843c; }
+.tagline { color:#9aa0a6; font-size:12.5px; }
+
+.searchrow { display:flex; gap:8px; align-items:stretch; max-width:900px; margin:22px 0 6px; }
+#search { flex:1; min-width:0; background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:8px;
+  padding:11px 14px; font-size:15px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+#search:focus { outline:none; border-color:#c8843c; }
+.count { color:#9aa0a6; font-size:12px; align-self:center; white-space:nowrap; }
+
+.modgroup { margin-top:26px; }
+.modhead { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:14px; font-weight:700;
+  letter-spacing:.06em; color:#cbb089; padding-bottom:6px; border-bottom:1px solid #2a2d34;
+  display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+.modhead:hover { color:#e0c39f; }
+.caret { color:#9aa0a6; font-size:11px; width:10px; text-align:center; flex:none; }
+
+table { width:100%; border-collapse:collapse; margin-top:6px; }
+td { padding:8px 10px; vertical-align:top; border-bottom:1px solid #1e2127; font-size:13.5px; }
+tr:hover td { background:#16181c; }
+
+.method { font-family: ui-monospace, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:.05em;
+  padding:2px 7px; border-radius:5px; white-space:nowrap; }
+.m-GET { background:#1f3320; color:#9fe0a3; }
+.m-POST { background:#1f2a3a; color:#8fc2f0; }
+.m-other { background:#332a1f; color:#e0c39f; }
+
+.kind { font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; padding:2px 7px; border-radius:5px;
+  border:1px solid #3a3e46; color:#9aa0a6; white-space:nowrap; }
+.k-ui { border-color:#3a5a3a; color:#9fd6a0; }
+.k-api { border-color:#3a4a6a; color:#9fb6e0; }
+.k-internal { border-color:#4a4a4a; color:#8a8f96; }
+
+.path { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:13px; color:#e6e6e6;
+  word-break:break-all; }
+.path a { color:#e6e6e6; text-decoration:none; border-bottom:1px dotted #5a5f68; }
+.path a:hover { color:#fff; border-bottom-color:#c8843c; }
+.pathedit { width:100%; background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:6px;
+  padding:6px 8px; font-family: ui-monospace, Consolas, monospace; font-size:12.5px; }
+.pathedit:focus { outline:none; border-color:#c8843c; }
+.danger { color:#e0a13c; margin-right:7px; cursor:help; font-size:13px; }
+.desc { color:#9aa0a6; }
+.openbtn { background:#2a2d34; color:#e6e6e6; border:1px solid #3a3e46; border-radius:6px; padding:5px 12px;
+  font-size:12.5px; cursor:pointer; white-space:nowrap; text-decoration:none; display:inline-block; }
+.openbtn:hover { border-color:#c8843c; color:#fff; }
+
+#empty { color:#777; margin-top:30px; }
+.colmethod { width:1%; }
+.colkind { width:1%; }
+.colpath { width:42%; }
+.colact { width:1%; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="brand"><span class="leaf">🍃</span> Leaves Dev</span>
+  <span class="tagline">Every public route each installed mod registered. Filter with <code>a &amp; b | c</code>.</span>
+</div>
+
+<div class="searchrow">
+  <input id="search" type="text" placeholder="Filter routes (mod, path, description)…" autocomplete="off">
+  <span class="count" id="count"></span>
+</div>
+
+<div id="out"></div>
+<div id="empty" style="display:none">No routes reported. Is anything installed and loaded?</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var ALL = [];        // every route from the server
+  var collapsedMods = {}; // mod name -> true when its section is collapsed; kept across filter re-renders
+  var searchEl = document.getElementById("search");
+  var outEl = document.getElementById("out");
+  var countEl = document.getElementById("count");
+  var emptyEl = document.getElementById("empty");
+
+  // A route is "templated" if it has a path param ({id}) or query params (?a=&b=) - those can't be a plain
+  // one-click link, so we render an editable field instead of a bare link.
+  function isTemplated(path) {
+    return path.indexOf("{") !== -1 || path.indexOf("?") !== -1;
+  }
+
+  function methodClass(m) {
+    if (m === "GET") { return "m-GET"; }
+    if (m === "POST") { return "m-POST"; }
+    return "m-other";
+  }
+
+  function kindClass(k) {
+    if (k === "ui") { return "k-ui"; }
+    if (k === "internal") { return "k-internal"; }
+    return "k-api";
+  }
+
+  // Build the searchable haystack for one route, shared by the filter.
+  function hay(r) {
+    return (r.mod + " " + r.method + " " + r.path + " " + r.description).toLowerCase();
+  }
+
+  function render() {
+    var query = searchEl.value;
+    var LS = window.LeavesSearch;
+
+    // Group surviving routes by mod, preserving first-seen mod order.
+    var order = [];
+    var byMod = {};
+    var shown = 0;
+    for (var i = 0; i < ALL.length; i++) {
+      var r = ALL[i];
+      if (LS && !LS.test(hay(r), query)) { continue; }
+      if (!byMod[r.mod]) { byMod[r.mod] = []; order.push(r.mod); }
+      byMod[r.mod].push(r);
+      shown++;
+    }
+
+    outEl.textContent = "";
+    for (var g = 0; g < order.length; g++) {
+      var mod = order[g];
+      var rows = byMod[mod];
+
+      var group = document.createElement("div");
+      group.className = "modgroup";
+
+      var collapsed = collapsedMods[mod] === true;
+      var head = document.createElement("div");
+      head.className = "modhead";
+      var caret = document.createElement("span");
+      caret.className = "caret";
+      caret.textContent = collapsed ? "▸" : "▾";
+      var label = document.createElement("span");
+      label.textContent = mod + "  (" + rows.length + ")";
+      head.appendChild(caret);
+      head.appendChild(label);
+      group.appendChild(head);
+
+      var table = document.createElement("table");
+      if (collapsed) { table.style.display = "none"; }
+      for (var j = 0; j < rows.length; j++) {
+        table.appendChild(rowEl(rows[j]));
+      }
+      group.appendChild(table);
+
+      // Click the header to fold/unfold this mod's routes. State lives in collapsedMods so filtering keeps it.
+      (function (m, tbl, car) {
+        head.addEventListener("click", function () {
+          var nowCollapsed = !(collapsedMods[m] === true);
+          collapsedMods[m] = nowCollapsed;
+          tbl.style.display = nowCollapsed ? "none" : "";
+          car.textContent = nowCollapsed ? "▸" : "▾";
+        });
+      })(mod, table, caret);
+
+      outEl.appendChild(group);
+    }
+
+    countEl.textContent = shown + " / " + ALL.length + " routes";
+    emptyEl.style.display = ALL.length === 0 ? "block" : "none";
+  }
+
+  function cell(cls) { var td = document.createElement("td"); if (cls) { td.className = cls; } return td; }
+
+  function rowEl(r) {
+    var tr = document.createElement("tr");
+
+    var mtd = cell("colmethod");
+    var mspan = document.createElement("span");
+    mspan.className = "method " + methodClass(r.method);
+    mspan.textContent = r.method;
+    mtd.appendChild(mspan);
+    tr.appendChild(mtd);
+
+    var ktd = cell("colkind");
+    var kspan = document.createElement("span");
+    kspan.className = "kind " + kindClass(r.kind);
+    kspan.textContent = r.kind;
+    ktd.appendChild(kspan);
+    tr.appendChild(ktd);
+
+    var ptd = cell("colpath path");
+    var editable = isTemplated(r.path);
+    if (editable) {
+      // Fill in the params, then Open uses whatever's in the box. Keeps placeholder routes out of a dead link
+      // (and off the server's red 404 log until you actually mean to call one).
+      var input = document.createElement("input");
+      input.className = "pathedit";
+      input.type = "text";
+      input.value = r.path;
+      ptd.appendChild(input);
+      tr._input = input;
+    } else if (r.method === "GET") {
+      var a = document.createElement("a");
+      a.href = r.path;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = r.path;
+      ptd.appendChild(a);
+    } else {
+      ptd.textContent = r.path; // non-GET: show it, no auto-call
+    }
+    // Warn on routes that mutate data - a ⚠ with a hover note, sat in front of the path.
+    if (r.danger) {
+      var warn = document.createElement("span");
+      warn.className = "danger";
+      warn.textContent = "⚠";
+      warn.title = "Calling this can permanently alter data, use carefully";
+      ptd.insertBefore(warn, ptd.firstChild);
+    }
+    tr.appendChild(ptd);
+
+    var dtd = cell("desc");
+    dtd.textContent = r.description;
+    tr.appendChild(dtd);
+
+    var atd = cell("colact");
+    if (r.method === "GET") {
+      var btn = document.createElement("a");
+      btn.className = "openbtn";
+      btn.textContent = "Open ↗";
+      btn.target = "_blank";
+      btn.rel = "noopener";
+      if (editable) {
+        btn.href = "#";
+        btn.addEventListener("click", function (ev) {
+          ev.preventDefault();
+          window.open(tr._input.value, "_blank", "noopener");
+        });
+      } else {
+        btn.href = r.path;
+      }
+      atd.appendChild(btn);
+    }
+    tr.appendChild(atd);
+
+    return tr;
+  }
+
+  searchEl.addEventListener("input", render);
+
+  fetch("/webui/dev/routesJson", { cache: "no-store" })
+    .then(function (res) { return res.ok ? res.json() : []; })
+    .then(function (list) { ALL = Array.isArray(list) ? list : []; render(); })
+    .catch(function () { ALL = []; render(); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Leaves_WebUI</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <OutputType>Library</OutputType>
+    <Version>1.0.0</Version>
+    <!-- Build straight into a droppable user/mods/<ModName> layout at the workspace root -->
+    <OutputPath>..\dist\SPT\user\mods\$(MSBuildProjectName)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SPTarkov.Common" Version="4.0.13" />
+    <PackageReference Include="SPTarkov.DI" Version="4.0.13" />
+    <PackageReference Include="SPTarkov.Server.Core" Version="4.0.13" />
+    <!-- LeavesUtils ships as its own separately-installed mod - compile against it (for
+         Leaves.HttpUtils / Leaves.Utils / Leaves.RouteInfo), but don't copy a dll -->
+    <ProjectReference Include="../Leaves-LeavesUtil/Leaves-LeavesUtil.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WebUiFileHost is an IHttpListener; its Handle(...) signature uses ASP.NET Core's HttpContext /
+         StatusCodes, which live in the ASP.NET Core shared framework that the plain Microsoft.NET.Sdk
+         doesn't reference by default. Compile-only - it resolves against the SPT host's already-loaded
+         ASP.NET runtime, nothing extra ships. (Same line as Leaves-LeavesUtil's csproj.) -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Every web-UI page / stylesheet / client script for the whole Leaves mod suite. Served verbatim
+         off disk at runtime by WebUiFileHost, read fresh per request so a tweak to a deployed file
+         shows without a rebuild. Client scripts are stored as .txt (SPT's ModValidator rejects a mod
+         folder containing a .js/.ts file) and served at a .js URL. -->
+    <None Include="assets\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="CopyToSecondaryLocation" AfterTargets="Build" Condition="'$(SkipModPackaging)' != 'true'">
+    <ItemGroup>
+      <OutputFiles Include="$(OutputPath)**\*.*" />
+    </ItemGroup>
+
+    <!-- 1. Purge the ENTIRE previous _dist (old-version zips included) so a version bump doesn't
+         leave stale zips behind and removed/renamed files don't stick round -->
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\_dist"
+      Condition="Exists('$(MSBuildProjectDirectory)\_dist')" />
+
+    <!-- 2. Copy fresh build output into the mod folder structure -->
+    <Copy SourceFiles="@(OutputFiles)"
+      DestinationFolder="$(MSBuildProjectDirectory)\_dist\SPT\user\mods\$(MSBuildProjectName)\%(RecursiveDir)"
+      SkipUnchangedFiles="true" />
+
+    <!-- 3. Zip the CONTENTS of _dist -->
+    <ZipDirectory SourceDirectory="$(MSBuildProjectDirectory)\_dist"
+      DestinationFile="$(MSBuildProjectDirectory)\$(MSBuildProjectName)_$(Version).zip"
+      Overwrite="true" />
+
+    <!-- 4. Purge the loose folder, leaving only the zip -->
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\_dist\SPT" />
+
+    <!-- 5. Move the finished zip into _dist -->
+    <Move SourceFiles="$(MSBuildProjectDirectory)\$(MSBuildProjectName)_$(Version).zip"
+      DestinationFiles="$(MSBuildProjectDirectory)\_dist\$(MSBuildProjectName)_$(Version).zip" />
+  </Target>
+</Project>

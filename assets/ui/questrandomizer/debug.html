@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questrandomizer — Debug &amp; Dump</title>
+<link rel="stylesheet" href="/webui/base.css">
+<link rel="stylesheet" href="/questrandomizer/ui/styles.css">
+<!-- Optional cross-mod nav rail (Leaves-WebUI). 404s harmlessly if that mod isn't installed. -->
+<script defer src="/webui/rail.js"></script>
+<!-- Shared per-player turn-in listing (also used by the Info page's "Required items" tab). -->
+<script src="/questrandomizer/ui/required-list.js"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>Questrandomizer</h1>
+    <div class="muted" style="font-size:13px;">🐞 Debug &amp; Dump</div>
+    <select id="profile"></select>
+    <div class="sidesep"></div>
+    <button id="verify" title="Check this profile for quests stuck with every objective ticked but a greyed-out Complete button (the one-session desync), and heal them. No restart needed — reopen the trader screen after.">🩹 Verify &amp; fix quests</button>
+    <div class="sidenote" id="verify-status" hidden></div>
+    <div class="sidesep"></div>
+    <button class="tab navbtn active" data-tab="browse">Browse</button>
+    <button class="tab navbtn" data-tab="quests">Quests (JSON)</button>
+    <button class="tab navbtn" data-tab="outlines">Outlines (JSON)</button>
+    <button class="tab navbtn" data-tab="locale">Locale</button>
+    <button class="tab navbtn" data-tab="handins">Hand-ins (all)</button>
+    <div class="sidesep"></div>
+    <div class="sidenote">The quest, outline &amp; locale data <b>as this profile is served it, live from server memory</b> — not the on-disk vanilla DB. IDs are annotated with a <code style="display:inline;margin:0;">// name</code> comment. Big to display? Use Download and open it in an editor.</div>
+  </aside>
+  <main class="main">
+
+  <!-- BROWSE (human-readable, every quest) -->
+  <div class="pane active" id="pane-browse">
+    <div class="sub">Every quest in this profile's tree, rendered the same way as the re-roll search — name, trader, objective text with links &amp; (R)/(F) mod markers. Read-only; no completion state.</div>
+    <div class="bar">
+      <input type="text" id="b-search" placeholder="Search quests &amp; objectives… e.g. &quot;Shoreline&quot;, &quot;kill 5&quot;, a trader" autocomplete="off">
+    </div>
+    <div class="list" id="b-list"><div class="row muted">Loading…</div></div>
+    <div class="status" id="b-status"></div>
+  </div>
+
+  <!-- QUESTS -->
+  <div class="pane" id="pane-quests">
+    <div class="sub">Every quest in this profile's live table, one collapsible card each. Search matches the quest name and the raw JSON (ids, values, annotations). Read-only.</div>
+    <div class="bar">
+      <input type="text" id="quests-search" placeholder="Search quests &amp; JSON… e.g. &quot;Shoreline&quot;, a MongoId, &quot;WeaponModsExclusive&quot;" autocomplete="off">
+      <button id="quests-download" title="Download the whole quest table as one .jsonc file">⬇ Download</button>
+    </div>
+    <div class="list" id="quests-list"><div class="row muted">Loading…</div></div>
+    <div class="status" id="quests-status"></div>
+  </div>
+
+  <!-- OUTLINES -->
+  <div class="pane" id="pane-outlines">
+    <div class="sub">This profile's stored <b>outlines</b> — the rolled decisions each quest is rebuilt from (the source of truth). One card per rolled quest. Read-only.</div>
+    <div class="bar">
+      <input type="text" id="outlines-search" placeholder="Search outlines &amp; JSON… e.g. a category name, &quot;SavageRoles&quot;, a MongoId" autocomplete="off">
+      <button id="outlines-download" title="Download all outlines as one .jsonc file">⬇ Download</button>
+    </div>
+    <div class="list" id="outlines-list"><div class="row muted">Loading…</div></div>
+    <div class="status" id="outlines-status"></div>
+  </div>
+
+  <!-- LOCALE -->
+  <div class="pane" id="pane-locale">
+    <div class="sub">This profile's full English locale (the game's locale merged with this mod's per-profile overrides). Search filters to matching lines. Read-only.</div>
+    <div class="bar">
+      <input type="text" id="l-search" placeholder="Search locale lines… e.g. a quest id, part of an objective sentence" autocomplete="off">
+      <button id="l-download" title="Download the whole locale as one .jsonc file">⬇ Download</button>
+    </div>
+    <pre class="dump" id="l-dump">Loading…</pre>
+    <div class="status" id="l-status"></div>
+  </div>
+
+  <!-- HAND-INS (ALL) — every turn-in in the whole tree, any state, via the shared per-player listing -->
+  <div class="pane" id="pane-handins">
+    <div class="sub">Every item hand-in in this profile's <b>whole</b> quest tree — locked, active, completed, failed alike, with <b>nothing subtracted</b> (counts are the full required amount). Quest items are excluded. Read-only.</div>
+    <div class="bar">
+      <input type="text" id="hi-search" placeholder="Search item or quest…" autocomplete="off">
+      <label class="admintoggle" style="margin-left:auto;" title="Combine the same item with and without Found-in-Raid into one total"><input type="checkbox" id="hi-mergefir"> Merge FiR</label>
+    </div>
+    <div class="sub" id="hi-sub"></div>
+    <div id="hi-list"><div class="row muted">Loading…</div></div>
+    <div class="status" id="hi-status"></div>
+  </div>
+
+  </main>
+</div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const api = p => '/questrandomizer/api/' + p;
+  const LS = { profile: 'qr_profile', tab: 'qr_dbg_tab' }; // profile key shared with the re-roll page
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const rxEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Escape the text FIRST, then highlight with the equally-escaped needle so it lines up.
+  function hl(text, f) {
+    const e = esc(text || '');
+    const terms = LeavesSearch.terms(f);
+    if (!terms.length) return e;
+    const rx = terms.map(t => rxEsc(esc(t))).join('|');
+    return e.replace(new RegExp(rx, 'gi'), m => `<mark>${m}</mark>`);
+  }
+  const pid = () => $('#profile').value;
+  // Trigger a client-side file download of some text - no server round-trip.
+  function download(name, text) {
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  const nick = () => {
+    const opt = $('#profile').selectedOptions[0];
+    return (opt ? opt.textContent : 'profile').replace(/\s*\(lvl.*$/, '').trim() || 'profile';
+  };
+
+  // ===================================================================================
+  // Human-readable quest rendering — mirrors the main page (questrandomizer.html). Kept here so the
+  // debug page is self-contained; if these ever diverge, questrandomizer.html is the source of truth.
+  // ===================================================================================
+  const TDEV = 'https://tarkov.dev/';
+  const MAP_SLUGS = {
+    'customs': 'customs',
+    'factory': 'factory', 'factory - day': 'factory', 'factory - night': 'factory',
+    'woods': 'woods', 'shoreline': 'shoreline', 'interchange': 'interchange',
+    'reserve': 'reserve', 'lighthouse': 'lighthouse', 'streets of tarkov': 'streets-of-tarkov',
+    'ground zero': 'ground-zero', 'the lab': 'the-lab', 'labs': 'the-lab', 'labyrinth': 'labyrinth'
+  };
+  const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  let vanillaNames = new Map();
+  async function loadVanillaNames() {
+    try {
+      const names = await (await fetch(api('vanilla-names'))).json();
+      vanillaNames = new Map(Object.entries(names).map(([k, v]) => [k.toLowerCase(), v]));
+    } catch (e) { /* keep empty - linking everything beats linking nothing */ }
+  }
+  const isLinkable = label =>
+    MAP_SLUGS[label.toLowerCase()] !== undefined || vanillaNames.size === 0 || vanillaNames.has(label.toLowerCase());
+  function entityUrl(name) {
+    const trimmed = name.trim();
+    const map = MAP_SLUGS[trimmed.toLowerCase()];
+    if (map) return `${TDEV}map/${map}`;
+    const full = vanillaNames.get(trimmed.toLowerCase()) || trimmed;
+    return `${TDEV}item/${slugify(full)}`;
+  }
+  const HANDBOOK = '/questrandomizer/ui/handbook';
+  let weaponCats = new Set(), modCats = new Set();
+  async function loadHandbookNames() {
+    try {
+      const d = await (await fetch(api('handbook'))).json();
+      weaponCats = new Set(d.weaponCategories.map(c => c.name.toLowerCase()));
+      modCats = new Set(d.modCategories.map(c => c.name.toLowerCase()));
+    } catch (e) { /* no handbook -> category names stay plain text */ }
+  }
+  function categoryHref(label) {
+    const l = label.toLowerCase();
+    if (weaponCats.has(l)) return `${HANDBOOK}#weapon-${slugify(label)}`;
+    if (modCats.has(l)) return `${HANDBOOK}#mod-${slugify(label)}`;
+    return null;
+  }
+  function nameHtml(name, f) {
+    const raw = String(name || '');
+    if (raw.startsWith('(M)')) return hl(raw, f);
+    const link = `<a href="${esc(TDEV + 'task/' + slugify(raw))}" target="_blank" rel="noopener noreferrer">${hl(raw, f)}</a>`;
+    return link;
+  }
+  function linkify(text, f) {
+    const raw = String(text || '');
+    let out = '', last = 0, m;
+    const rx = /\[([^\]]*)\]/g;
+    while ((m = rx.exec(raw)) !== null) {
+      out += hl(raw.slice(last, m.index), f);
+      let inner = '';
+      for (const part of m[1].split(/( or )/)) {
+        const label = part.trim();
+        if (part === ' or ' || !label) { inner += hl(part, f); continue; }
+        const at = part.indexOf(label);
+        const catHref = categoryHref(label);
+        const body = catHref
+          ? `<a class="cat" href="${esc(catHref)}" target="qr-handbook" rel="noopener">${hl(label, f)}</a>`
+          : isLinkable(label)
+            ? `<a href="${esc(entityUrl(label))}" target="_blank" rel="noopener noreferrer">${hl(label, f)}</a>`
+            : hl(label, f);
+        inner += hl(part.slice(0, at), f) + body + hl(part.slice(at + label.length), f);
+      }
+      out += '[' + inner + ']';
+      last = rx.lastIndex;
+    }
+    return out + hl(raw.slice(last), f);
+  }
+  // Re-colour the (R)/(F) mod markers right after a weapon group bracket (green requires / red forbids).
+  function colorModMarkers(html) {
+    return html.replace(/\]((?:\(R\)|\(F\))+)/g, (whole, marks) => ']' +
+      marks.replace(/\(R\)/g, '<span class="modmark req">(R)</span>').replace(/\(F\)/g, '<span class="modmark forb">(F)</span>'));
+  }
+  // One quest: name + trader, then its objectives as plain text (no completion state on this page).
+  function questBody(q, f) {
+    return `<div class="grow"><div class="qname">${nameHtml(q.name, f)} <span class="qtrader">— ${hl(q.trader || '?', f)}</span></div>`
+      + ((q.objectives && q.objectives.length)
+          ? `<ul class="objs">${q.objectives.map(o => `<li><span class="otext">${colorModMarkers(linkify((o && o.text) || '', f))}</span></li>`).join('')}</ul>`
+          : '<div class="rw">(no objective text)</div>');
+  }
+  const qHaystack = q => [(q.name || ''), (q.trader || '')]
+    .concat((q.objectives || []).map(o => (o && o.text) || ''))
+    .join(' ');
+  const qMatches = (q, f) => LeavesSearch.test(qHaystack(q), f);
+
+  async function loadProfiles() {
+    // Shared LeavesUtils profile feed (filters headless/alt accounts centrally). Rows are { id, nickname, level }.
+    const ps = await (await fetch('/webui/db/profiles')).json();
+    $('#profile').innerHTML = ps.length
+      ? ps.map(p => `<option value="${p.id}">${esc(p.nickname)} (lvl ${p.level})</option>`).join('')
+      : '<option value="">No profiles found</option>';
+    const saved = localStorage.getItem(LS.profile);
+    if (saved && ps.some(p => p.id === saved)) $('#profile').value = saved;
+    if (ps.length) reloadActive();
+  }
+
+  // ---- Collapsible-card dumps (Quests + Outlines share this exactly) ----
+  // Each returns { load, render, reset } over its own DOM ids + endpoint. `noun` names the thing in
+  // the empty message and the download filename; `endpoint` is the /api path relative to /api/.
+  function makeCards(key, noun, endpoint) {
+    let data = [];        // [{ id, name, jsonc }]
+    let loadedFor = null; // profile the data belongs to
+    const list = $('#' + key + '-list');
+    const search = $('#' + key + '-search');
+    const status = $('#' + key + '-status');
+
+    function matches(q, f) { return LeavesSearch.test(q.name + ' ' + q.jsonc, f); }
+    function render() {
+      const f = search.value.toLowerCase().trim();
+      const shown = data.filter(q => matches(q, f));
+      list.innerHTML = shown.length
+        ? shown.map(q => `<details class="dcard" data-id="${esc(q.id)}">`
+            + `<summary><span class="qname">${hl(q.name, f)}</span> <span class="qtrader">${esc(q.id)}</span></summary>`
+            + `<pre class="dump"></pre></details>`).join('')
+        : '<div class="row muted">' + (data.length ? 'No matching ' + noun + '.' : 'No generated ' + noun + ' for this profile yet.') + '</div>';
+      status.textContent = shown.length + ' / ' + data.length + ' ' + noun + '.';
+    }
+    async function load() {
+      if (!pid()) return;
+      if (loadedFor === pid()) { render(); return; }
+      list.innerHTML = '<div class="row muted">Loading…</div>';
+      const res = await (await fetch(api(endpoint + '?profileId=' + encodeURIComponent(pid())))).json();
+      data = res.quests || [];
+      loadedFor = pid();
+      render();
+    }
+    // Fill a card's <pre> lazily on first open (keeps the DOM light with hundreds of cards).
+    list.addEventListener('toggle', e => {
+      const card = e.target.closest('.dcard');
+      if (!card || !card.open) return;
+      const pre = card.querySelector('pre');
+      if (pre.dataset.filled) return;
+      const q = data.find(x => x.id === card.dataset.id);
+      if (!q) return;
+      pre.innerHTML = hl(q.jsonc, search.value.toLowerCase().trim());
+      pre.dataset.filled = '1';
+    }, true);
+    search.addEventListener('input', render);
+    $('#' + key + '-download').addEventListener('click', () => {
+      if (!data.length) return;
+      // Rejoin the per-card pieces into one object keyed by id, mirroring the server's
+      // Dictionary<id, X> and staying valid JSONC (annotations are line-end comments).
+      const body = data.map(q => `"${q.id}": ${q.jsonc}`).join(',\n');
+      download(noun + '_' + nick() + '.jsonc', '{\n' + body + '\n}\n');
+    });
+    return { load, reset() { loadedFor = null; } };
+  }
+  const quests = makeCards('quests', 'quests', 'debug/quests');
+  const outlines = makeCards('outlines', 'outlines', 'debug/outlines');
+
+  // ---- Hand-ins (all) — the shared per-player turn-in listing (same module as the Info page),
+  // fed the whole-tree, any-state hand-in list for the selected profile. ----
+  const handins = QrRequiredList({
+    dataUrl: () => api('debug/handins?profileId=' + encodeURIComponent(pid())),
+    content: '#hi-list', sub: '#hi-sub', status: '#hi-status',
+    search: '#hi-search', merge: '#hi-mergefir', noun: 'hand-in',
+    summary: s => `${s.count} hand-in${s.count === 1 ? '' : 's'} across ${s.quests} quest${s.quests === 1 ? '' : 's'} · ${s.items} distinct item${s.items === 1 ? '' : 's'}.`
+  });
+  // Merge choice shares the Info page's key so the two pages stay in sync.
+  $('#hi-mergefir').checked = localStorage.getItem('qr_info_mergefir') === '1';
+  $('#hi-mergefir').addEventListener('change', () => localStorage.setItem('qr_info_mergefir', $('#hi-mergefir').checked ? '1' : ''));
+
+  // ---- Browse (human-readable, every quest) ----
+  let browseQuests = [];
+  let browseProfile = null;
+  async function loadBrowse() {
+    if (!pid()) return;
+    if (browseProfile === pid()) { renderBrowse(); return; }
+    $('#b-list').innerHTML = '<div class="row muted">Loading…</div>';
+    browseQuests = await (await fetch(api('debug/browse?profileId=' + encodeURIComponent(pid())))).json();
+    browseProfile = pid();
+    renderBrowse();
+  }
+  // The chain panel on the right of a browse card: which quests come before this one and which it
+  // unlocks. Each name is a link that jumps the list to that quest (fills the search box). "—" when a
+  // side is empty (start / end of a chain). Returns '' for a standalone quest so no panel shows.
+  function chainNames(list, f) {
+    if (!list || !list.length) return '<span class="muted">—</span>';
+    return list.map(n => `<a class="chainlink" data-name="${esc(n.name)}">${hl(n.name, f)}</a>`).join('<br>');
+  }
+  function chainHtml(q, f) {
+    const prev = q.previous || [], next = q.leadsTo || [];
+    if (!prev.length && !next.length) return '';
+    return `<div class="qchain">`
+      + `<div class="chainhdr">Previous</div><div class="chainbody">${chainNames(prev, f)}</div>`
+      + `<div class="chainhdr">Leads to</div><div class="chainbody">${chainNames(next, f)}</div>`
+      + `</div>`;
+  }
+  function renderBrowse() {
+    const f = $('#b-search').value.toLowerCase().trim();
+    const shown = browseQuests.filter(q => qMatches(q, f));
+    // questBody opens a `.grow` it leaves for us to close; the chain panel sits between that and the
+    // `.qrow` close, so the row is grow | chain, side by side.
+    $('#b-list').innerHTML = shown.length
+      ? shown.map(q => `<div class="qrow">` + questBody(q, f) + '</div>' + chainHtml(q, f) + '</div>').join('')
+      : '<div class="row muted">' + (browseQuests.length ? 'No matching quests.' : 'No generated quests for this profile yet.') + '</div>';
+    $('#b-status').textContent = shown.length + ' / ' + browseQuests.length + ' quest(s).';
+  }
+  $('#b-search').addEventListener('input', renderBrowse);
+  // Click a chain-neighbour name to jump the list to that quest.
+  $('#b-list').addEventListener('click', e => {
+    const a = e.target.closest('.chainlink');
+    if (!a) return;
+    e.preventDefault();
+    $('#b-search').value = a.dataset.name;
+    renderBrowse();
+    $('#b-list').scrollTop = 0;
+  });
+
+  // ---- Locale (one blob) ----
+  let localeText = '';
+  let localeProfile = null;
+  async function loadLocale() {
+    if (!pid()) return;
+    if (localeProfile === pid()) { renderLocale(); return; }
+    $('#l-dump').textContent = 'Loading…';
+    const res = await (await fetch(api('debug/locale?profileId=' + encodeURIComponent(pid())))).json();
+    localeText = res.text || '';
+    localeProfile = pid();
+    $('#l-status').dataset.size = Math.round((res.bytes || 0) / 1024);
+    renderLocale();
+  }
+  function renderLocale() {
+    const f = $('#l-search').value.toLowerCase().trim();
+    const kb = $('#l-status').dataset.size || 0;
+    if (!localeText) { $('#l-dump').textContent = 'No generated locale for this profile yet.'; $('#l-status').textContent = ''; return; }
+    if (!f) {
+      $('#l-dump').textContent = localeText; // whole thing as plain text (no per-line highlight pass)
+      $('#l-status').textContent = localeText.split('\n').length + ' line(s), ' + kb + ' KB.';
+      return;
+    }
+    const lines = localeText.split('\n');
+    const kept = [];
+    for (const line of lines) if (LeavesSearch.test(line, f)) kept.push(line);
+    $('#l-dump').innerHTML = kept.length ? kept.map(l => hl(l, f)).join('\n') : '<span class="muted">No matching lines.</span>';
+    $('#l-status').textContent = kept.length + ' / ' + lines.length + ' line(s) match, ' + kb + ' KB total.';
+  }
+  $('#l-search').addEventListener('input', renderLocale);
+  $('#l-download').addEventListener('click', () => { if (localeText) download('locale_' + nick() + '_en.jsonc', localeText); });
+
+  // Load whichever tab is active for the current profile.
+  function reloadActive() {
+    if ($('#pane-browse').classList.contains('active')) loadBrowse();
+    else if ($('#pane-quests').classList.contains('active')) quests.load();
+    else if ($('#pane-outlines').classList.contains('active')) outlines.load();
+    else if ($('#pane-handins').classList.contains('active')) handins.load();
+    else loadLocale();
+  }
+
+  // ---- Verify & fix (one-session desync healer) ----
+  // Per-profile maintenance, independent of the open tab: heal any quest stuck with every objective
+  // ticked but a greyed-out Complete button, without a server restart. Only quests already broken are
+  // touched server-side; a clean profile reports "no stuck quests".
+  async function verifyQuests() {
+    const st = $('#verify-status');
+    if (!pid()) { st.hidden = false; st.textContent = 'Pick a profile first.'; return; }
+    const btn = $('#verify');
+    btn.disabled = true;
+    st.hidden = false;
+    st.textContent = 'Verifying…';
+    try {
+      const res = await (await fetch(api('verify'), { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ profileId: pid() }) })).json();
+      if (!res.ok) { st.innerHTML = '<span class="warn">Error: ' + esc(res.error || 'unknown') + '</span>'; return; }
+      if ((res.count || 0) === 0) {
+        st.textContent = '✔ No stuck quests found — nothing to fix.';
+        return;
+      }
+      st.innerHTML = '<b>Fixed ' + res.count + ' stuck quest(s):</b> ' + res.healed.map(esc).join(', ')
+        + '<br><span class="warn">Reopen the trader / quest screen in-game</span> to see the Complete button light up.';
+      // The heal changes completion + objective progress, so drop the cached dumps and refresh the tab.
+      quests.reset(); outlines.reset(); handins.reset(); browseProfile = null; localeProfile = null;
+      reloadActive();
+    } catch (e) {
+      st.innerHTML = '<span class="warn">Failed: ' + esc(e.message || e) + '</span>';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ---- wiring ----
+  function selectTab(name) {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+    const btn = document.querySelector('.tab[data-tab="' + name + '"]');
+    (btn || document.querySelector('.tab')).classList.add('active');
+    $('#pane-' + ((btn && name) || 'quests')).classList.add('active');
+    reloadActive();
+  }
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    selectTab(t.dataset.tab);
+    localStorage.setItem(LS.tab, t.dataset.tab);
+  }));
+  $('#verify').addEventListener('click', verifyQuests);
+  $('#profile').addEventListener('change', () => {
+    localStorage.setItem(LS.profile, pid());
+    const st = $('#verify-status'); st.hidden = true; st.textContent = ''; // clear any stale heal message from the last profile
+    quests.reset(); outlines.reset(); handins.reset(); browseProfile = null; localeProfile = null; // refetch for the newly-picked profile
+    reloadActive();
+  });
+
+  selectTab(localStorage.getItem(LS.tab) || 'browse');
+  // Vanilla-name + handbook-category sets load FIRST so the Browse render already knows which labels
+  // to link (and where); the profile list follows. If either fetch fails we render anyway.
+  Promise.all([loadVanillaNames(), loadHandbookNames()]).then(loadProfiles);
+</script>
+</body>
+</html>

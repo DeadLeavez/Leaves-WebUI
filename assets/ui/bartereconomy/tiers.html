@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barter Economy — Tier list</title>
+<link rel="stylesheet" href="/webui/base.css">
+<!-- Optional cross-mod nav rail (LeavesUtils). 404s harmlessly if that mod isn't installed. Also
+     publishes window.LeavesSearch (the shared &/| search parser) + the Ctrl+F/Esc shortcuts. -->
+<script defer src="/webui/rail.js"></script>
+<style>
+  body { padding: 0; }
+
+  /* Left sidebar (QR-style): title + page switcher. Kept in sync with the Timers page. */
+  .layout { display: flex; align-items: stretch; min-height: 100vh; }
+  .side {
+    width: 220px; flex: none; box-sizing: border-box; background: var(--panel);
+    border-right: 1px solid var(--border-dim); padding: 18px 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .side h1 { font-size: 17px; margin: 0 0 6px; color: var(--gold-dim); font-weight: 650; }
+  .sidesep { height: 1px; background: var(--border-dim); margin: 4px 0; }
+  .navbtn {
+    display: block; width: 100%; box-sizing: border-box; text-align: left; cursor: pointer;
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 14px; text-decoration: none;
+  }
+  .navbtn:hover { border-color: var(--border-hover); color: var(--link-hover); }
+  .navbtn.active { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+  .sidenote { margin-top: auto; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+
+  .main { flex: 1; min-width: 0; box-sizing: border-box; padding: 20px 22px; }
+  @media (max-width: 760px) {
+    .layout { flex-direction: column; }
+    .side { width: auto; border-right: none; border-bottom: 1px solid var(--border-dim); }
+  }
+
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  input[type=text] {
+    flex: 1; min-width: 200px; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 14px;
+  }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  /* Tier sections. */
+  .tier { margin-bottom: 20px; }
+  .tier-head {
+    display: flex; align-items: baseline; gap: 10px; margin: 0 0 8px;
+    font-size: 15px; color: var(--gold-dim); font-weight: 650;
+  }
+  .tier-head .cnt { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 14px; }
+  .item {
+    display: flex; align-items: baseline; gap: 8px; padding: 5px 8px; border-radius: 6px;
+    border: 1px solid var(--border-dim); background: var(--panel); min-width: 0;
+  }
+  .iname { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ishort { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+
+  .status { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .status.err { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <h1>🤝 Barter Economy</h1>
+    <div class="sidesep"></div>
+    <a class="navbtn" href="/bartereconomy/ui">⏱️ Timers</a>
+    <a class="navbtn" href="/bartereconomy/ui/trades">💱 Trades</a>
+    <a class="navbtn" href="/bartereconomy/ui/search">🔍 Search</a>
+    <a class="navbtn active" href="/bartereconomy/ui/tiers">📊 Tier list</a>
+    <a class="navbtn" href="/bartereconomy/ui/pinned">📌 Pinned</a>
+    <div class="sidenote">Every item players can pay WITH, bucketed by value tier (higher = more valuable). The <code>[T&lt;n&gt;]</code> tag is searchable — type <code>[T5]</code> to isolate a tier.</div>
+  </aside>
+  <main class="main">
+    <div class="bar">
+      <input type="text" id="q" placeholder="Search name, short name, id, or [T3]…  (a & b, a | b)" autocomplete="off">
+    </div>
+    <div id="content"><div class="hint">Loading…</div></div>
+    <div class="status" id="status"></div>
+  </main>
+</div>
+
+<script>
+  "use strict";
+  const $ = s => document.querySelector(s);
+
+  // Flat list built from the tier map + item index: one row per tiered item.
+  let items = [];   // { id, tier, name, short, parent, hay, tag }
+
+  // Client-side search: prefer the shared &/| parser (from rail.js) once it's loaded; fall back to a
+  // plain case-insensitive substring test before then (rail.js is deferred, so it lands after this).
+  function matches(hay, q) {
+    if (window.LeavesSearch) return window.LeavesSearch.test(hay, q);
+    q = (q || "").toLowerCase().trim();
+    return !q || hay.indexOf(q) !== -1;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // Item display names can carry BSG <color> rich-text markup, and when BarterEconomy's showItemTiers
+  // option is on it also appends its own "[T#]" tag to the name. We render our own tier grouping + tag,
+  // so strip both here to show a clean base name (and avoid a doubled tag).
+  function cleanName(n) {
+    return String(n)
+      .replace(/<\/?color[^>]*>/gi, "")   // <color=…> / </color>
+      .replace(/\s*\[T\d+\]\s*/g, " ")     // BarterEconomy's own name tag
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function itemHtml(it) {
+    // No per-item [T#] tag - the tier header already states it. The tag stays in the search haystack
+    // (see load) so "[T35]" still filters to that tier.
+    return '<div class="item" title="' + escapeHtml(it.id) + '">' +
+             '<span class="iname">' + escapeHtml(it.name) + '</span>' +
+             (it.short ? '<span class="ishort">' + escapeHtml(it.short) + '</span>' : '') +
+           '</div>';
+  }
+
+  function render() {
+    const q = $("#q").value;
+    const shown = items.filter(it => matches(it.hay, q));
+
+    // Group the visible rows by tier, highest first.
+    const byTier = new Map();
+    for (const it of shown) {
+      if (!byTier.has(it.tier)) byTier.set(it.tier, []);
+      byTier.get(it.tier).push(it);
+    }
+    const tiers = Array.from(byTier.keys()).sort((a, b) => b - a);
+
+    if (!shown.length) {
+      $("#content").innerHTML = '<div class="hint">No items match.</div>';
+    } else {
+      let html = "";
+      for (const tier of tiers) {
+        const rows = byTier.get(tier).sort((a, b) => a.name.localeCompare(b.name));
+        html += '<div class="tier">' +
+                  '<div class="tier-head">Tier ' + tier + ' <span class="cnt">' + rows.length + ' items</span></div>' +
+                  '<div class="items">' + rows.map(itemHtml).join("") + '</div>' +
+                '</div>';
+      }
+      $("#content").innerHTML = html;
+    }
+
+    $("#status").textContent =
+      shown.length + " of " + items.length + " items · " + tiers.length + " tiers shown";
+  }
+
+  async function load() {
+    try {
+      // The tier map (id -> tier) is BarterEconomy's; item names come from LeavesUtils' item index.
+      const [tiersRes, indexRes] = await Promise.all([
+        fetch("/bartereconomy/api/tiers", { cache: "no-store" }),
+        fetch("/webui/db/index", { cache: "no-store" })
+      ]);
+      if (!tiersRes.ok) throw new Error("tiers HTTP " + tiersRes.status);
+      if (!indexRes.ok) throw new Error("index HTTP " + indexRes.status);
+      const tierMap = await tiersRes.json();
+      const index = await indexRes.json();
+
+      // id -> index row, for name/short/parent lookup.
+      const byId = new Map();
+      for (const row of index) byId.set(row.id, row);
+
+      items = [];
+      for (const id in tierMap) {
+        const tier = tierMap[id];
+        const row = byId.get(id);
+        const name = row ? cleanName(row.name) : id;
+        const short = row ? row.short : "";
+        const parent = row ? row.parent : "";
+        const tag = "[T" + tier + "]";
+        // Searchable haystack: the tier tag is included so "[T3]" filters to that tier.
+        const hay = (tag + " " + name + " " + short + " " + id + " " + parent).toLowerCase();
+        items.push({ id, tier, name, short, parent, hay, tag });
+      }
+
+      if (!items.length) {
+        $("#content").innerHTML =
+          '<div class="hint">No tier list yet — barters build lazily on the first trader update after ' +
+          'server start. Reload in a moment.</div>';
+        $("#status").textContent = "";
+        return;
+      }
+
+      $("#status").classList.remove("err");
+      render();
+    } catch (e) {
+      $("#content").innerHTML = "";
+      $("#status").classList.add("err");
+      $("#status").textContent = "Failed to load tier list: " + e.message;
+    }
+  }
+
+  $("#q").addEventListener("input", render);
+  load();
+</script>
+</body>
+</html>
